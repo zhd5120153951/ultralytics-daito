@@ -91,7 +91,7 @@ class BaseTrainer:
         csv (Path): Path to results CSV file.
     """
 
-    def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
+    def __init__(self, rds, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         """
         Initializes the BaseTrainer class.
 
@@ -99,6 +99,7 @@ class BaseTrainer:
             cfg (str, optional): Path to a configuration file. Defaults to DEFAULT_CFG.
             overrides (dict, optional): Configuration overrides. Defaults to None.
         """
+        self.rds = rds
         self.args = get_cfg(cfg, overrides)
         self.check_resume(overrides)
         self.device = select_device(self.args.device, self.args.batch)
@@ -119,18 +120,22 @@ class BaseTrainer:
         self.save_period = self.args.save_period
 
         self.batch_size = self.args.batch
-        self.epochs = self.args.epochs or 100  # in case users accidentally pass epochs=None with timed training
+        # in case users accidentally pass epochs=None with timed training
+        self.epochs = self.args.epochs or 100
         self.start_epoch = 0
         if RANK == -1:
             print_args(vars(self.args))
 
         # Device
         if self.device.type in {"cpu", "mps"}:
-            self.args.workers = 0  # faster CPU training as time dominated by inference, not dataloading
+            # faster CPU training as time dominated by inference, not dataloading
+            self.args.workers = 0
 
         # Model and Dataset
-        self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolo11n -> yolo11n.pt
-        with torch_distributed_zero_first(LOCAL_RANK):  # avoid auto-downloading dataset multiple times
+        # add suffix, i.e. yolo11n -> yolo11n.pt
+        self.model = check_model_file_from_stem(self.args.model)
+        # avoid auto-downloading dataset multiple times
+        with torch_distributed_zero_first(LOCAL_RANK):
             self.trainset, self.testset = self.get_dataset()
         self.ema = None
 
@@ -157,10 +162,12 @@ class BaseTrainer:
 
     def add_callback(self, event: str, callback):
         """Appends the given callback."""
+        # add callback只能加没有的回调函数
         self.callbacks[event].append(callback)
 
     def set_callback(self, event: str, callback):
         """Overrides the existing callbacks with the given callback."""
+        # 如果是重写的已有的用这个
         self.callbacks[event] = [callback]
 
     def run_callbacks(self, event: str):
@@ -172,7 +179,8 @@ class BaseTrainer:
         """Allow device='', device=None on Multi-GPU systems to default to device=0."""
         if isinstance(self.args.device, str) and len(self.args.device):  # i.e. device='0' or device='0,1,2,3'
             world_size = len(self.args.device.split(","))
-        elif isinstance(self.args.device, (tuple, list)):  # i.e. device=[0, 1, 2, 3] (multi-GPU from CLI is list)
+        # i.e. device=[0, 1, 2, 3] (multi-GPU from CLI is list)
+        elif isinstance(self.args.device, (tuple, list)):
             world_size = len(self.args.device)
         elif self.args.device in {"cpu", "mps"}:  # i.e. device='cpu' or 'mps'
             world_size = 0
@@ -205,12 +213,13 @@ class BaseTrainer:
                 ddp_cleanup(self, str(file))
 
         else:
-            self._do_train(world_size)
+            self._do_train(world_size)  # 传入redis
 
     def _setup_scheduler(self):
         """Initialize training learning rate scheduler."""
         if self.args.cos_lr:
-            self.lf = one_cycle(1, self.args.lrf, self.epochs)  # cosine 1->hyp['lrf']
+            # cosine 1->hyp['lrf']
+            self.lf = one_cycle(1, self.args.lrf, self.epochs)
         else:
             self.lf = lambda x: max(1 - x / self.epochs, 0) * (1.0 - self.args.lrf) + self.args.lrf  # linear
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
@@ -251,7 +260,8 @@ class BaseTrainer:
             if any(x in k for x in freeze_layer_names):
                 LOGGER.info(f"Freezing layer '{k}'")
                 v.requires_grad = False
-            elif not v.requires_grad and v.dtype.is_floating_point:  # only floating point Tensor can require gradients
+            # only floating point Tensor can require gradients
+            elif not v.requires_grad and v.dtype.is_floating_point:
                 LOGGER.info(
                     f"WARNING ⚠️ setting 'requires_grad=True' for frozen layer '{k}'. "
                     "See ultralytics.engine.trainer for customization of frozen layers."
@@ -261,11 +271,13 @@ class BaseTrainer:
         # Check AMP
         self.amp = torch.tensor(self.args.amp).to(self.device)  # True or False
         if self.amp and RANK in {-1, 0}:  # Single-GPU and DDP
-            callbacks_backup = callbacks.default_callbacks.copy()  # backup callbacks as check_amp() resets them
+            # backup callbacks as check_amp() resets them
+            callbacks_backup = callbacks.default_callbacks.copy()
             self.amp = torch.tensor(check_amp(self.model), device=self.device)
             callbacks.default_callbacks = callbacks_backup  # restore callbacks
         if RANK > -1 and world_size > 1:  # DDP
-            dist.broadcast(self.amp, src=0)  # broadcast the tensor from rank 0 to all other ranks (returns None)
+            # broadcast the tensor from rank 0 to all other ranks (returns None)
+            dist.broadcast(self.amp, src=0)
         self.amp = bool(self.amp)  # as boolean
         self.scaler = (
             torch.amp.GradScaler("cuda", enabled=self.amp) if TORCH_2_4 else torch.cuda.amp.GradScaler(enabled=self.amp)
@@ -298,7 +310,8 @@ class BaseTrainer:
                 self.plot_training_labels()
 
         # Optimizer
-        self.accumulate = max(round(self.args.nbs / self.batch_size), 1)  # accumulate loss before optimizing
+        # accumulate loss before optimizing
+        self.accumulate = max(round(self.args.nbs / self.batch_size), 1)
         weight_decay = self.args.weight_decay * self.batch_size * self.accumulate / self.args.nbs  # scale weight_decay
         iterations = math.ceil(len(self.train_loader.dataset) / max(self.batch_size, self.args.nbs)) * self.epochs
         self.optimizer = self.build_optimizer(
@@ -339,12 +352,14 @@ class BaseTrainer:
             base_idx = (self.epochs - self.args.close_mosaic) * nb
             self.plot_idx.extend([base_idx, base_idx + 1, base_idx + 2])
         epoch = self.start_epoch
-        self.optimizer.zero_grad()  # zero any resumed gradients to ensure stability on train start
+        # zero any resumed gradients to ensure stability on train start
+        self.optimizer.zero_grad()
         while True:
             self.epoch = epoch
             self.run_callbacks("on_train_epoch_start")
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore")  # suppress 'Detected lr_scheduler.step() before optimizer.step()'
+                # suppress 'Detected lr_scheduler.step() before optimizer.step()'
+                warnings.simplefilter("ignore")
                 self.scheduler.step()
 
             self.model.train()
@@ -357,7 +372,10 @@ class BaseTrainer:
                 self.train_loader.reset()
 
             if RANK in {-1, 0}:
-                LOGGER.info(self.progress_string())
+                # zhd 2025/03/06
+                LOGGER.info(self.progress_string())  # Epoch GPU box_loss ...
+                # 只输出对用的值
+                # rds.xadd("train_001_猫狗训练",{"Epoch"})
                 pbar = TQDM(enumerate(self.train_loader), total=nb)
             self.tloss = None
             for i, batch in pbar:
@@ -398,7 +416,8 @@ class BaseTrainer:
                         self.stop = (time.time() - self.train_time_start) > (self.args.time * 3600)
                         if RANK != -1:  # if DDP training
                             broadcast_list = [self.stop if RANK == 0 else None]
-                            dist.broadcast_object_list(broadcast_list, 0)  # broadcast 'stop' to all ranks
+                            # broadcast 'stop' to all ranks
+                            dist.broadcast_object_list(broadcast_list, 0)
                             self.stop = broadcast_list[0]
                         if self.stop:  # training time exceeded
                             break
@@ -410,7 +429,8 @@ class BaseTrainer:
                         ("%11s" * 2 + "%11.4g" * (2 + loss_length))
                         % (
                             f"{epoch + 1}/{self.epochs}",
-                            f"{self._get_memory():.3g}G",  # (GB) GPU memory util
+                            # (GB) GPU memory util
+                            f"{self._get_memory():.3g}G",
                             *(self.tloss if loss_length > 1 else torch.unsqueeze(self.tloss, 0)),  # losses
                             batch["cls"].shape[0],  # batch size, i.e. 8
                             batch["img"].shape[-1],  # imgsz, i.e 640
@@ -422,8 +442,22 @@ class BaseTrainer:
 
                 self.run_callbacks("on_train_batch_end")
 
-            self.lr = {f"lr/pg{ir}": x["lr"] for ir, x in enumerate(self.optimizer.param_groups)}  # for loggers
+            # for loggers
+            self.lr = {f"lr/pg{ir}": x["lr"] for ir, x in enumerate(self.optimizer.param_groups)}
             self.run_callbacks("on_train_epoch_end")
+            # print(self.tloss)# tensor([1.2220,3.1067,1.6617], device='cuda:0')
+            # print(torch.unsqueeze(self.tloss, 0))#tensor([[1.2220, 3.1067, 1.6617]], device='cuda:0')
+            # loss = self.tloss if loss_length > 1 else torch.unsqueeze(
+            #     self.tloss, 0)
+            # epoch_result = {
+            #     "epoch": epoch+1,
+            #     "gpu_mem": round(self._get_memory(), 3),  # GB
+            #     "box_loss": round(loss[0].item(), 4),
+            #     "cls_loss": round(loss[1].item(), 4),
+            #     "dfl_loss": round(loss[2].item(), 4),
+            #     "Instances": batch["cls"].shape[0],
+            #     "Size": batch["img"].shape[-1]
+            # }
             if RANK in {-1, 0}:
                 final_epoch = epoch + 1 >= self.epochs
                 self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
@@ -431,7 +465,27 @@ class BaseTrainer:
                 # Validation
                 if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
                     self.metrics, self.fitness = self.validate()
-                self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+                metrics = {**self.label_loss_items(self.tloss), **self.metrics, **self.lr}
+                self.save_metrics(metrics)
+                # zhd
+                # 发送 epoch gpu_mem train/box_loss train/cls_loss train/dfl_loss val/box_loss val/cls_loss val/dfl_loss precision recall mAP50 mAP50-95
+                epoch_result = {
+                    "epoch": epoch + 1,
+                    "gpu_mem": round(self._get_memory(), 3),  # GB
+                    "train/box_loss": metrics["train/box_loss"],
+                    "train/cls_loss": metrics["train/cls_loss"],
+                    "train/dfl_loss": metrics["train/dfl_loss"],
+                    "val/box_loss": metrics["val/box_loss"],
+                    "val/cls_loss": metrics["val/cls_loss"],
+                    "val/dfl_loss": metrics["val/dfl_loss"],
+                    "metrics/precision": metrics["metrics/precision(B)"],
+                    "metrics/recall": metrics["metrics/recall(B)"],
+                    "metrics/mAP50": metrics["metrics/mAP50(B)"],
+                    "metrics/mAP50-95": metrics["metrics/mAP50-95(B)"],
+                }
+                self.rds.xadd(
+                    "train_001_猫狗训练_each_epoch_info", {"each_epoch_info": str(epoch_result).encode()}, maxlen=100
+                )
                 self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
                 if self.args.time:
                     self.stop |= (time.time() - self.train_time_start) > (self.args.time * 3600)
@@ -457,7 +511,8 @@ class BaseTrainer:
             # Early Stopping
             if RANK != -1:  # if DDP training
                 broadcast_list = [self.stop if RANK == 0 else None]
-                dist.broadcast_object_list(broadcast_list, 0)  # broadcast 'stop' to all ranks
+                # broadcast 'stop' to all ranks
+                dist.broadcast_object_list(broadcast_list, 0)
                 self.stop = broadcast_list[0]
             if self.stop:
                 break  # must break all DDP ranks
@@ -542,7 +597,8 @@ class BaseTrainer:
         if self.best_fitness == self.fitness:
             self.best.write_bytes(serialized_ckpt)  # save best.pt
         if (self.save_period > 0) and (self.epoch % self.save_period == 0):
-            (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
+            # save epoch, i.e. 'epoch3.pt'
+            (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)
         # if self.args.close_mosaic and self.epoch == (self.epochs - self.args.close_mosaic - 1):
         #    (self.wdir / "last_mosaic.pt").write_bytes(serialized_ckpt)  # save mosaic checkpoint
 
@@ -563,7 +619,8 @@ class BaseTrainer:
             }:
                 data = check_det_dataset(self.args.data)
                 if "yaml_file" in data:
-                    self.args.data = data["yaml_file"]  # for validating 'yolo train data=url.zip' usage
+                    # for validating 'yolo train data=url.zip' usage
+                    self.args.data = data["yaml_file"]
         except Exception as e:
             raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
         self.data = data
@@ -585,7 +642,8 @@ class BaseTrainer:
             cfg = weights.yaml
         elif isinstance(self.args.pretrained, (str, Path)):
             weights, _ = attempt_load_one_weight(self.args.pretrained)
-        self.model = self.get_model(cfg=cfg, weights=weights, verbose=RANK == -1)  # calls Model(cfg, weights)
+        # calls Model(cfg, weights)
+        self.model = self.get_model(cfg=cfg, weights=weights, verbose=RANK == -1)
         return ckpt
 
     def optimizer_step(self):
@@ -609,7 +667,8 @@ class BaseTrainer:
         The returned dict is expected to contain "fitness" key.
         """
         metrics = self.validator(self)
-        fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
+        # use loss as fitness measure if not found
+        fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())
         if not self.best_fitness or self.best_fitness < fitness:
             self.best_fitness = fitness
         return metrics, fitness
@@ -780,7 +839,8 @@ class BaseTrainer:
             (torch.optim.Optimizer): The constructed optimizer.
         """
         g = [], [], []  # optimizer parameter groups
-        bn = tuple(v for k, v in nn.__dict__.items() if "Norm" in k)  # normalization layers, i.e. BatchNorm2d()
+        # normalization layers, i.e. BatchNorm2d()
+        bn = tuple(v for k, v in nn.__dict__.items() if "Norm" in k)
         if name == "auto":
             LOGGER.info(
                 f"{colorstr('optimizer:')} 'optimizer=auto' found, "
@@ -788,7 +848,8 @@ class BaseTrainer:
                 f"determining best 'optimizer', 'lr0' and 'momentum' automatically... "
             )
             nc = self.data.get("nc", 10)  # number of classes
-            lr_fit = round(0.002 * 5 / (4 + nc), 6)  # lr0 fit equation to 6 decimal places
+            # lr0 fit equation to 6 decimal places
+            lr_fit = round(0.002 * 5 / (4 + nc), 6)
             name, lr, momentum = ("SGD", 0.01, 0.9) if iterations > 10000 else ("AdamW", lr_fit, 0.9)
             self.args.warmup_bias_lr = 0.0  # no higher than 0.01 for Adam
 
@@ -816,8 +877,10 @@ class BaseTrainer:
                 "Request support for addition optimizers at https://github.com/ultralytics/ultralytics."
             )
 
-        optimizer.add_param_group({"params": g[0], "weight_decay": decay})  # add g0 with weight_decay
-        optimizer.add_param_group({"params": g[1], "weight_decay": 0.0})  # add g1 (BatchNorm2d weights)
+        # add g0 with weight_decay
+        optimizer.add_param_group({"params": g[0], "weight_decay": decay})
+        # add g1 (BatchNorm2d weights)
+        optimizer.add_param_group({"params": g[1], "weight_decay": 0.0})
         LOGGER.info(
             f"{colorstr('optimizer:')} {type(optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups "
             f"{len(g[1])} weight(decay=0.0), {len(g[0])} weight(decay={decay}), {len(g[2])} bias(decay=0.0)"

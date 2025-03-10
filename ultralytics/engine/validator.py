@@ -140,7 +140,8 @@ class BaseValidator:
             if engine:
                 self.args.batch = model.batch_size
             elif not pt and not jit:
-                self.args.batch = model.metadata.get("batch", 1)  # export.py models default to batch-size 1
+                # export.py models default to batch-size 1
+                self.args.batch = model.metadata.get("batch", 1)
                 LOGGER.info(f"Setting batch={self.args.batch} input of shape ({self.args.batch}, 3, {imgsz}, {imgsz})")
 
             if str(self.args.data).split(".")[-1] in {"yaml", "yml"}:
@@ -167,7 +168,10 @@ class BaseValidator:
             Profile(device=self.device),
             Profile(device=self.device),
         )
+        # zhd 2025/03/06
+        # Class Images Instance ...
         bar = TQDM(self.dataloader, desc=self.get_desc(), total=len(self.dataloader))
+        # print(self.get_desc())
         self.init_metrics(de_parallel(model))
         self.jdict = []  # empty before each val
         for batch_i, batch in enumerate(bar):
@@ -205,7 +209,8 @@ class BaseValidator:
         if self.training:
             model.float()
             results = {**stats, **trainer.label_loss_items(self.loss.cpu() / len(self.dataloader), prefix="val")}
-            return {k: round(float(v), 5) for k, v in results.items()}  # return results as 5 decimal place floats
+            # return results as 5 decimal place floats
+            return {k: round(float(v), 5) for k, v in results.items()}
         else:
             LOGGER.info(
                 "Speed: {:.1f}ms preprocess, {:.1f}ms inference, {:.1f}ms loss, {:.1f}ms postprocess per image".format(
@@ -252,7 +257,8 @@ class BaseValidator:
                     if valid.any():
                         correct[detections_idx[valid], i] = True
             else:
-                matches = np.nonzero(iou >= threshold)  # IoU > threshold and classes match
+                # IoU > threshold and classes match
+                matches = np.nonzero(iou >= threshold)
                 matches = np.array(matches).T
                 if matches.shape[0]:
                     if matches.shape[0] > 1:

@@ -137,11 +137,13 @@ class Model(torch.nn.Module):
         # Check if Triton Server model
         elif self.is_triton_model(model):
             self.model_name = self.model = model
-            self.overrides["task"] = task or "detect"  # set `task=detect` if not explicitly set
+            # set `task=detect` if not explicitly set
+            self.overrides["task"] = task or "detect"
             return
 
         # Load or create new YOLO model
-        __import__("os").environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # to avoid deterministic warnings
+        # to avoid deterministic warnings
+        __import__("os").environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         if Path(model).suffix in {".yaml", ".yml"}:
             self._new(model, task=task, verbose=verbose)
         else:
@@ -259,7 +261,8 @@ class Model(torch.nn.Module):
         self.overrides["task"] = self.task
 
         # Below added to allow export from YAMLs
-        self.model.args = {**DEFAULT_CFG_DICT, **self.overrides}  # combine default and model args (prefer model args)
+        # combine default and model args (prefer model args)
+        self.model.args = {**DEFAULT_CFG_DICT, **self.overrides}
         self.model.task = self.task
         self.model_name = cfg
 
@@ -284,7 +287,8 @@ class Model(torch.nn.Module):
             >>> model._load("path/to/weights.pth", task="detect")
         """
         if weights.lower().startswith(("https://", "http://", "rtsp://", "rtmp://", "tcp://")):
-            weights = checks.check_file(weights, download_dir=SETTINGS["weights_dir"])  # download and return local file
+            # download and return local file
+            weights = checks.check_file(weights, download_dir=SETTINGS["weights_dir"])
         weights = checks.check_model_file_from_stem(weights)  # add suffix, i.e. yolo11n -> yolo11n.pt
 
         if Path(weights).suffix == ".pt":
@@ -293,7 +297,8 @@ class Model(torch.nn.Module):
             self.overrides = self.model.args = self._reset_ckpt_args(self.model.args)
             self.ckpt_path = self.model.pt_path
         else:
-            weights = checks.check_file(weights)  # runs in all cases, not redundant with above call
+            # runs in all cases, not redundant with above call
+            weights = checks.check_file(weights)
             self.model, self.ckpt = weights, None
             self.task = task or guess_model_task(weights)
             self.ckpt_path = weights
@@ -355,7 +360,7 @@ class Model(torch.nn.Module):
             p.requires_grad = True
         return self
 
-    def load(self, weights: Union[str, Path] = "yolo11n.pt") -> "Model":
+    def load(self, rds, weights: Union[str, Path] = "yolo11n.pt") -> "Model":
         """
         Loads parameters from the specified weights file into the model.
 
@@ -376,9 +381,11 @@ class Model(torch.nn.Module):
             >>> model.load("yolo11n.pt")
             >>> model.load(Path("path/to/weights.pt"))
         """
+        self.rds = rds
         self._check_is_pytorch_model()
         if isinstance(weights, (str, Path)):
-            self.overrides["pretrained"] = weights  # remember the weights for DDP training
+            # remember the weights for DDP training
+            self.overrides["pretrained"] = weights
             weights, self.ckpt = attempt_load_one_weight(weights)
         self.model.load(weights)
         return self
@@ -495,7 +502,8 @@ class Model(torch.nn.Module):
             >>> print(embeddings[0].shape)
         """
         if not kwargs.get("embed"):
-            kwargs["embed"] = [len(self.model.model) - 2]  # embed second-to-last layer if no indices passed
+            # embed second-to-last layer if no indices passed
+            kwargs["embed"] = [len(self.model.model) - 2]
         return self.predict(source, stream, **kwargs)
 
     def predict(
@@ -545,7 +553,8 @@ class Model(torch.nn.Module):
         )
 
         custom = {"conf": 0.25, "batch": 1, "save": is_cli, "mode": "predict"}  # method defaults
-        args = {**self.overrides, **custom, **kwargs}  # highest priority args on the right
+        # highest priority args on the right
+        args = {**self.overrides, **custom, **kwargs}
         prompts = args.pop("prompts", None)  # for SAM-type models
 
         if not self.predictor:
@@ -601,8 +610,10 @@ class Model(torch.nn.Module):
             from ultralytics.trackers import register_tracker
 
             register_tracker(self, persist)
-        kwargs["conf"] = kwargs.get("conf") or 0.1  # ByteTrack-based method needs low confidence predictions as input
-        kwargs["batch"] = kwargs.get("batch") or 1  # batch-size 1 for tracking in videos
+        # ByteTrack-based method needs low confidence predictions as input
+        kwargs["conf"] = kwargs.get("conf") or 0.1
+        # batch-size 1 for tracking in videos
+        kwargs["batch"] = kwargs.get("batch") or 1
         kwargs["mode"] = "track"
         return self.predict(source=source, stream=stream, **kwargs)
 
@@ -635,7 +646,8 @@ class Model(torch.nn.Module):
             >>> print(results.box.map)  # Print mAP50-95
         """
         custom = {"rect": True}  # method defaults
-        args = {**self.overrides, **custom, **kwargs, "mode": "val"}  # highest priority args on the right
+        # highest priority args on the right
+        args = {**self.overrides, **custom, **kwargs, "mode": "val"}
 
         validator = (validator or self._smart_load("validator"))(args=args, _callbacks=self.callbacks)
         validator(model=self.model)
@@ -684,7 +696,8 @@ class Model(torch.nn.Module):
         args = {**DEFAULT_CFG_DICT, **self.model.args, **custom, **kwargs, "mode": "benchmark"}
         return benchmark(
             model=self,
-            data=kwargs.get("data"),  # if no 'data' argument passed set data=None for default datasets
+            # if no 'data' argument passed set data=None for default datasets
+            data=kwargs.get("data"),
             imgsz=args["imgsz"],
             half=args["half"],
             int8=args["int8"],
@@ -738,7 +751,8 @@ class Model(torch.nn.Module):
             "device": None,  # reset to avoid multi-GPU errors
             "verbose": False,
         }  # method defaults
-        args = {**self.overrides, **custom, **kwargs, "mode": "export"}  # highest priority args on the right
+        # highest priority args on the right
+        args = {**self.overrides, **custom, **kwargs, "mode": "export"}
         return Exporter(overrides=args, _callbacks=self.callbacks)(model=self.model)
 
     def train(
@@ -783,7 +797,8 @@ class Model(torch.nn.Module):
             >>> results = model.train(data="coco8.yaml", epochs=3)
         """
         self._check_is_pytorch_model()
-        if hasattr(self.session, "model") and self.session.model.id:  # Ultralytics HUB session with loaded model
+        # Ultralytics HUB session with loaded model
+        if hasattr(self.session, "model") and self.session.model.id:
             if any(kwargs):
                 LOGGER.warning("WARNING ⚠️ using HUB training arguments, ignoring local training arguments.")
             kwargs = self.session.train_args  # overwrite kwargs
@@ -797,23 +812,28 @@ class Model(torch.nn.Module):
             "model": self.overrides["model"],
             "task": self.task,
         }  # method defaults
-        args = {**overrides, **custom, **kwargs, "mode": "train"}  # highest priority args on the right
+        # highest priority args on the right
+        args = {**overrides, **custom, **kwargs, "mode": "train"}
         if args.get("resume"):
             args["resume"] = self.ckpt_path
-
-        self.trainer = (trainer or self._smart_load("trainer"))(overrides=args, _callbacks=self.callbacks)
+        # zhd 获取到DetectionTrainer,然后构造一个trainer,其中DetectionTrainer继承BaseTrainer,
+        self.trainer = (trainer or self._smart_load("trainer"))(
+            self.rds, overrides=args, _callbacks=self.callbacks
+        )  # 实例化一个训练对象(DetectionTrainer类型)
         if not args.get("resume"):  # manually set model only if not resuming
             self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
             self.model = self.trainer.model
 
         self.trainer.hub_session = self.session  # attach optional HUB session
-        self.trainer.train()
+        # zhd
+        self.trainer.train()  # 把Redis给训练器
         # Update model and cfg after training
         if RANK in {-1, 0}:
             ckpt = self.trainer.best if self.trainer.best.exists() else self.trainer.last
             self.model, self.ckpt = attempt_load_one_weight(ckpt)
             self.overrides = self.model.args
-            self.metrics = getattr(self.trainer.validator, "metrics", None)  # TODO: no metrics returned by DDP
+            # TODO: no metrics returned by DDP
+            self.metrics = getattr(self.trainer.validator, "metrics", None)
         return self.metrics
 
     def tune(
@@ -857,7 +877,8 @@ class Model(torch.nn.Module):
             from .tuner import Tuner
 
             custom = {}  # method defaults
-            args = {**self.overrides, **custom, **kwargs, "mode": "train"}  # highest priority args on the right
+            # highest priority args on the right
+            args = {**self.overrides, **custom, **kwargs, "mode": "train"}
             return Tuner(args=args, _callbacks=self.callbacks)(model=self, iterations=iterations)
 
     def _apply(self, fn) -> "Model":
@@ -885,7 +906,8 @@ class Model(torch.nn.Module):
         self._check_is_pytorch_model()
         self = super()._apply(fn)  # noqa
         self.predictor = None  # reset predictor as device may have changed
-        self.overrides["device"] = self.device  # was str(self.device) i.e. device(type='cuda', index=0) -> 'cuda:0'
+        # was str(self.device) i.e. device(type='cuda', index=0) -> 'cuda:0'
+        self.overrides["device"] = self.device
         return self
 
     @property
@@ -1096,6 +1118,7 @@ class Model(torch.nn.Module):
             - The task_map attribute should be properly initialized with the correct mappings for each task.
         """
         try:
+            # 根据参数,从映射中获取模型(在外部的对象是YOLO,所以self.task_map是YOLO中的的,而不是父类的)
             return self.task_map[self.task][key]
         except Exception as e:
             name = self.__class__.__name__

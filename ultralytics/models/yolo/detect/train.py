@@ -28,6 +28,7 @@ class DetectionTrainer(BaseTrainer):
         trainer = DetectionTrainer(overrides=args)
         trainer.train()
         ```
+    train()没有覆盖父类的,且初始化也是用父类的
     """
 
     def build_dataset(self, img_path, mode="train", batch=None):
@@ -45,14 +46,16 @@ class DetectionTrainer(BaseTrainer):
     def get_dataloader(self, dataset_path, batch_size=16, rank=0, mode="train"):
         """Construct and return dataloader."""
         assert mode in {"train", "val"}, f"Mode must be 'train' or 'val', not {mode}."
-        with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
+        # init dataset *.cache only once if DDP
+        with torch_distributed_zero_first(rank):
             dataset = self.build_dataset(dataset_path, mode, batch_size)
         shuffle = mode == "train"
         if getattr(dataset, "rect", False) and shuffle:
             LOGGER.warning("WARNING ⚠️ 'rect=True' is incompatible with DataLoader shuffle, setting shuffle=False")
             shuffle = False
         workers = self.args.workers if mode == "train" else self.args.workers * 2
-        return build_dataloader(dataset, batch_size, workers, shuffle, rank)  # return dataloader
+        # return dataloader
+        return build_dataloader(dataset, batch_size, workers, shuffle, rank)
 
     def preprocess_batch(self, batch):
         """Preprocesses a batch of images by scaling and converting to float."""
@@ -105,13 +108,15 @@ class DetectionTrainer(BaseTrainer):
         """
         keys = [f"{prefix}/{x}" for x in self.loss_names]
         if loss_items is not None:
-            loss_items = [round(float(x), 5) for x in loss_items]  # convert tensors to 5 decimal place floats
+            # convert tensors to 5 decimal place floats
+            loss_items = [round(float(x), 5) for x in loss_items]
             return dict(zip(keys, loss_items))
         else:
             return keys
 
     def progress_string(self):
         """Returns a formatted string of training progress with epoch, GPU memory, loss, instances and size."""
+        # 重写父类的
         return ("\n" + "%11s" * (4 + len(self.loss_names))) % (
             "Epoch",
             "GPU_mem",

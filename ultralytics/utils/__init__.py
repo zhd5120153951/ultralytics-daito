@@ -28,23 +28,29 @@ import tqdm
 import yaml
 
 from ultralytics import __version__
+from ultralytics.utils.patches import imread, imshow, imwrite, torch_load, torch_save
 
 # PyTorch Multi-GPU DDP Constants
 RANK = int(os.getenv("RANK", -1))
-LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
+# https://pytorch.org/docs/stable/elastic/run.html
+LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))
 
 # Other Constants
 ARGV = sys.argv or ["", ""]  # sometimes sys.argv = []
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]  # YOLO
 ASSETS = ROOT / "assets"  # default images
-ASSETS_URL = "https://github.com/ultralytics/assets/releases/download/v0.0.0"  # assets GitHub URL
+# assets GitHub URL
+ASSETS_URL = "https://github.com/ultralytics/assets/releases/download/v0.0.0"
 DEFAULT_CFG_PATH = ROOT / "cfg/default.yaml"
-DEFAULT_SOL_CFG_PATH = ROOT / "cfg/solutions/default.yaml"  # Ultralytics solutions yaml path
-NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLO multiprocessing threads
+# Ultralytics solutions yaml path
+DEFAULT_SOL_CFG_PATH = ROOT / "cfg/solutions/default.yaml"
+# number of YOLO multiprocessing threads
+NUM_THREADS = min(8, max(1, os.cpu_count() - 1))
 AUTOINSTALL = str(os.getenv("YOLO_AUTOINSTALL", True)).lower() == "true"  # global auto-install mode
 VERBOSE = str(os.getenv("YOLO_VERBOSE", True)).lower() == "true"  # global verbose mode
-TQDM_BAR_FORMAT = "{l_bar}{bar:10}{r_bar}" if VERBOSE else None  # tqdm bar format
+# tqdm bar format
+TQDM_BAR_FORMAT = "{l_bar}{bar:10}{r_bar}" if VERBOSE else None
 LOGGING_NAME = "ultralytics"
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])  # environment booleans
 ARM64 = platform.machine() in {"arm64", "aarch64"}  # ARM64 booleans
@@ -125,12 +131,17 @@ HELP_MSG = """
 
 # Settings and Environment Variables
 torch.set_printoptions(linewidth=320, precision=4, profile="default")
-np.set_printoptions(linewidth=320, formatter={"float_kind": "{:11.5g}".format})  # format short g, %precision=5
-cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
+# format short g, %precision=5
+np.set_printoptions(linewidth=320, formatter={"float_kind": "{:11.5g}".format})
+# prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
+cv2.setNumThreads(0)
 os.environ["NUMEXPR_MAX_THREADS"] = str(NUM_THREADS)  # NumExpr max threads
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # suppress verbose TF compiler warnings in Colab
-os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"  # suppress "NNPACK.cpp could not initialize NNPACK" warnings
-os.environ["KINETO_LOG_LEVEL"] = "5"  # suppress verbose PyTorch profiler output when computing FLOPs
+# suppress verbose TF compiler warnings in Colab
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+# suppress "NNPACK.cpp could not initialize NNPACK" warnings
+os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
+# suppress verbose PyTorch profiler output when computing FLOPs
+os.environ["KINETO_LOG_LEVEL"] = "5"
 
 if TQDM_RICH := str(os.getenv("YOLO_TQDM_RICH", False)).lower() == "true":
     from tqdm import rich
@@ -181,7 +192,8 @@ class TQDM(rich.tqdm if TQDM_RICH else tqdm.tqdm):
         """
         warnings.filterwarnings("ignore", category=tqdm.TqdmExperimentalWarning)  # suppress tqdm.rich warning
         kwargs["disable"] = not VERBOSE or kwargs.get("disable", False)
-        kwargs.setdefault("bar_format", TQDM_BAR_FORMAT)  # override default value if passed
+        # override default value if passed
+        kwargs.setdefault("bar_format", TQDM_BAR_FORMAT)
         super().__init__(*args, **kwargs)
 
 
@@ -326,7 +338,8 @@ def plt_settings(rcparams=None, backend="Agg"):
             original_backend = plt.get_backend()
             switch = backend.lower() != original_backend.lower()
             if switch:
-                plt.close("all")  # auto-close()ing of figures upon backend switching is deprecated since 3.8
+                # auto-close()ing of figures upon backend switching is deprecated since 3.8
+                plt.close("all")
                 plt.switch_backend(backend)
 
             # Plot with backend and always revert to original backend
@@ -407,7 +420,8 @@ def set_logging(name="LOGGING_NAME", verbose=True):
 
 
 # Set logger
-LOGGER = set_logging(LOGGING_NAME, verbose=VERBOSE)  # define globally (used in train.py, val.py, predict.py, etc.)
+# define globally (used in train.py, val.py, predict.py, etc.)
+LOGGER = set_logging(LOGGING_NAME, verbose=VERBOSE)
 for logger in "sentry_sdk", "urllib3.connectionpool":
     logging.getLogger(logger).setLevel(logging.CRITICAL + 1)
 
@@ -505,7 +519,8 @@ def yaml_load(file="data.yaml", append_filename=False):
             s = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\U00010000-\U0010ffff]+", "", s)
 
         # Add YAML filename to dict and return
-        data = yaml.safe_load(s) or {}  # always return a dict (yaml.safe_load() may return None for empty files)
+        # always return a dict (yaml.safe_load() may return None for empty files)
+        data = yaml.safe_load(s) or {}
         if append_filename:
             data["yaml_file"] = str(file)
         return data
@@ -528,7 +543,8 @@ def yaml_print(yaml_file: Union[str, Path, dict]) -> None:
 
 # Default configuration
 DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
-DEFAULT_SOL_DICT = yaml_load(DEFAULT_SOL_CFG_PATH)  # Ultralytics solutions configuration
+# Ultralytics solutions configuration
+DEFAULT_SOL_DICT = yaml_load(DEFAULT_SOL_CFG_PATH)
 for k, v in DEFAULT_CFG_DICT.items():
     if isinstance(v, str) and v.lower() == "none":
         DEFAULT_CFG_DICT[k] = None
@@ -647,7 +663,8 @@ def is_online() -> bool:
         (bool): True if connection is successful, False otherwise.
     """
     try:
-        assert str(os.getenv("YOLO_OFFLINE", "")).lower() != "true"  # check if ENV var YOLO_OFFLINE="True"
+        # check if ENV var YOLO_OFFLINE="True"
+        assert str(os.getenv("YOLO_OFFLINE", "")).lower() != "true"
         import socket
 
         for dns in ("1.1.1.1", "8.8.8.8"):  # check Cloudflare and Google DNS
@@ -826,7 +843,8 @@ def get_user_config_dir(sub_dir="Ultralytics"):
 
 
 # Define constants (required below)
-DEVICE_MODEL = read_device_model()  # is_jetson() and is_raspberrypi() depend on this constant
+# is_jetson() and is_raspberrypi() depend on this constant
+DEVICE_MODEL = read_device_model()
 ONLINE = is_online()
 IS_COLAB = is_colab()
 IS_KAGGLE = is_kaggle()
@@ -980,7 +998,8 @@ class Retry(contextlib.ContextDecorator):
                     print(f"Retry {self._attempts}/{self.times} failed: {e}")
                     if self._attempts >= self.times:
                         raise e
-                    time.sleep(self.delay * (2**self._attempts))  # exponential backoff delay
+                    # exponential backoff delay
+                    time.sleep(self.delay * (2**self._attempts))
 
         return wrapped_func
 
@@ -1074,7 +1093,8 @@ def set_sentry():
         before_send=before_send,
         ignore_errors=[KeyboardInterrupt, FileNotFoundError],
     )
-    sentry_sdk.set_user({"id": SETTINGS["uuid"]})  # SHA-256 anonymized UUID hash
+    # SHA-256 anonymized UUID hash
+    sentry_sdk.set_user({"id": SETTINGS["uuid"]})
 
 
 class JSONDict(dict):
@@ -1203,16 +1223,19 @@ class SettingsManager(JSONDict):
         from ultralytics.utils.torch_utils import torch_distributed_zero_first
 
         root = GIT_DIR or Path()
-        datasets_root = (root.parent if GIT_DIR and is_dir_writeable(root.parent) else root).resolve()
-
+        (root.parent if GIT_DIR and is_dir_writeable(root.parent) else root).resolve()
         self.file = Path(file)
         self.version = version
         self.defaults = {
             "settings_version": version,  # Settings schema version
-            "datasets_dir": str(datasets_root / "datasets"),  # Datasets directory
+            # modified by zhd 2025-03-06 12:40:37
+            # Datasets directory
+            # "datasets_dir": str(datasets_root / "datasets"),
+            "datasets_dir": str(root),
             "weights_dir": str(root / "weights"),  # Model weights directory
             "runs_dir": str(root / "runs"),  # Experiment runs directory
-            "uuid": hashlib.sha256(str(uuid.getnode()).encode()).hexdigest(),  # SHA-256 anonymized UUID hash
+            # SHA-256 anonymized UUID hash
+            "uuid": hashlib.sha256(str(uuid.getnode()).encode()).hexdigest(),
             "sync": True,  # Enable synchronization
             "api_key": "",  # Ultralytics API Key
             "openai_api_key": "",  # OpenAI API Key
@@ -1236,9 +1259,13 @@ class SettingsManager(JSONDict):
 
         with torch_distributed_zero_first(RANK):
             super().__init__(self.file)
-
-            if not self.file.exists() or not self:  # Check if file doesn't exist or is empty
-                LOGGER.info(f"Creating new Ultralytics Settings v{version} file ✅ {self.help_msg}")
+            # 用ultralytics包训练时,默认路径下存在settings.json,用源码训练时用不到
+            # if not self.file.exists() or not self:  # Check if file doesn't exist or is empty
+            #     LOGGER.info(
+            #         f"Creating new Ultralytics Settings v{version} file ✅ {self.help_msg}")
+            #     self.reset()
+            if self.file.exists() and self:
+                LOGGER.info("Using Ultralytics Source code, but pip's package. datasets_dir will be reset.")
                 self.reset()
 
             self._validate_settings()
@@ -1299,7 +1326,8 @@ def deprecation_warn(arg, new_arg=None):
 def clean_url(url):
     """Strip auth from URL, i.e. https://url.com/file.txt?auth -> https://url.com/file.txt."""
     url = Path(url).as_posix().replace(":/", "://")  # Pathlib turns :// -> :/, as_posix() for Windows
-    return unquote(url).split("?")[0]  # '%2F' to '/', split https://url.com/file.txt?auth
+    # '%2F' to '/', split https://url.com/file.txt?auth
+    return unquote(url).split("?")[0]
 
 
 def url2file(url):
@@ -1310,7 +1338,8 @@ def url2file(url):
 def vscode_msg(ext="ultralytics.ultralytics-snippets") -> str:
     """Display a message to install Ultralytics-Snippets for VS Code if not already installed."""
     path = (USER_CONFIG_DIR.parents[2] if WINDOWS else USER_CONFIG_DIR.parents[1]) / ".vscode/extensions"
-    obs_file = path / ".obsolete"  # file tracks uninstalled extensions, while source directory remains
+    # file tracks uninstalled extensions, while source directory remains
+    obs_file = path / ".obsolete"
     installed = any(path.glob(f"{ext}*")) and ext not in (obs_file.read_text("utf-8") if obs_file.exists() else "")
     url = "https://docs.ultralytics.com/integrations/vscode"
     return "" if installed else f"{colorstr('VS Code:')} view Ultralytics VS Code Extension ⚡ at {url}"
@@ -1321,7 +1350,8 @@ def vscode_msg(ext="ultralytics.ultralytics-snippets") -> str:
 # Check first-install steps
 PREFIX = colorstr("Ultralytics: ")
 SETTINGS = SettingsManager()  # initialize settings
-PERSISTENT_CACHE = JSONDict(USER_CONFIG_DIR / "persistent_cache.json")  # initialize persistent cache
+# initialize persistent cache
+PERSISTENT_CACHE = JSONDict(USER_CONFIG_DIR / "persistent_cache.json")
 DATASETS_DIR = Path(SETTINGS["datasets_dir"])  # global datasets directory
 WEIGHTS_DIR = Path(SETTINGS["weights_dir"])  # global weights directory
 RUNS_DIR = Path(SETTINGS["runs_dir"])  # global runs directory
@@ -1340,7 +1370,6 @@ TESTS_RUNNING = is_pytest_running() or is_github_action_running()
 set_sentry()
 
 # Apply monkey patches
-from ultralytics.utils.patches import imread, imshow, imwrite, torch_load, torch_save
 
 torch.load = torch_load
 torch.save = torch_save

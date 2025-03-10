@@ -49,6 +49,7 @@ def on_train_batch_end(trainer):
 
 def on_train_epoch_end(trainer):
     """Called at the end of each training epoch."""
+    # here is to write send train metrics to redis
     pass
 
 
