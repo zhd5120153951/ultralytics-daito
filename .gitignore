@@ -173,3 +173,8 @@ pnnx*
 
 # calibration image
 calibration_*.npy
+__pycache__/
+.vscode/
+data_cfg/
+train_results/
+export_results/
