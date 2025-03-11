@@ -111,7 +111,7 @@ class trainYOLODetectTask(Thread):
             # file.write(f"{key} = {value}\n")
             train_params[key] = value
         file.write(f'train_params={train_params}\n')
-        file.write('model = YOLO(model_cfg).load(model_path)\n')
+        file.write('model = YOLO(model_cfg).load(rds,model_path)\n')
         file.write('model.train(**train_params)\n')
         # 训练完成后的，模型移动操作代码块
         model_trained_path = '/'.join([train_params['project'],

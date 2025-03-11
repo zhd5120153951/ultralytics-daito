@@ -477,8 +477,9 @@ class BaseTrainer:
                 # Validation
                 if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
                     self.metrics, self.fitness = self.validate()
-                self.save_metrics(
-                    metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+                metrics = {
+                    **self.label_loss_items(self.tloss), **self.metrics, **self.lr}
+                self.save_metrics(metrics=metrics)
                 # zhd 发送epoch gpu_mem train/box_loss train/cls_loss train/dfl_loss val/box_loss val/cls_loss val/dfl_loss precision recall mAP50 mAP50-95
                 epoch_result = {
                     "epoch": epoch+1,

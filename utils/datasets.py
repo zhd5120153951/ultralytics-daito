@@ -299,11 +299,6 @@ class Dataset(Thread):
         data_yaml_config['val'] = [os.path.join(
             '../', item, 'val') for item in self.dst_dir]
         data_yaml_config['names'] = self.labels
-        # data_yaml_config['train'] = [os.path.join(
-        #     '/', item, 'train') for item in self.prefix_2]
-        # data_yaml_config['val'] = [os.path.join(
-        #     '/', item, 'val') for item in self.prefix_2]
-        # data_yaml_config['names'] = self.labels
 
         with open(self.data_yaml_path, mode='w', encoding='utf-8') as file:
             # 使用 yaml.dump 将数据写入文件
