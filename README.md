@@ -1,5 +1,9 @@
 # this repo is a fork of ultralytics, site:https://github.com/ultralytics.com
-
+## important tips!
+  1. ultralytics-daito仓库fork于官方仓库
+  2. main分支只用于同步更新官方的代码,自己的代码不能提交
+  3. dev分支只用于merge main的代码以及提交自己修改的功能代码
+  4. master分支用于打包,发布最新的开发,发布版本代码
 ## added new features:
 
 1. use this source code train models on own datasets
