@@ -178,3 +178,4 @@ __pycache__/
 data_cfg/
 train_results/
 export_results/
+log/
