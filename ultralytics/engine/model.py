@@ -366,7 +366,7 @@ class Model(torch.nn.Module):
             p.requires_grad = True
         return self
 
-    def load(self, rds=None, weights: Union[str, Path] = "yolo11n.pt") -> "Model":
+    def load(self, rds=None, task_id=None, task_name=None, weights: Union[str, Path] = "yolo11n.pt") -> "Model":
         """
         Loads parameters from the specified weights file into the model.
 
@@ -388,6 +388,8 @@ class Model(torch.nn.Module):
             >>> model.load(Path("path/to/weights.pt"))
         """
         self.rds = rds
+        self.task_id = task_id
+        self.task_name = task_name
         self._check_is_pytorch_model()
         if isinstance(weights, (str, Path)):
             # remember the weights for DDP training
@@ -834,7 +836,7 @@ class Model(torch.nn.Module):
             args["resume"] = self.ckpt_path
         # zhd 获取到DetectionTrainer,然后构造一个trainer,其中DetectionTrainer继承BaseTrainer,然后调用trainer.train()
         self.trainer = (trainer or self._smart_load("trainer"))(
-            self.rds, overrides=args, _callbacks=self.callbacks)
+            self.rds, self.task_id, self.task_name, overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
             self.trainer.model = self.trainer.get_model(
                 weights=self.model if self.ckpt else None, cfg=self.model.yaml)

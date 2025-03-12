@@ -106,7 +106,7 @@ class uploadMinio(Thread):
         重写Thread的run方法,启动asyncio事件循环执行所有上传任务
         """
         time.sleep(10)
-        while True:
+        while True:  # 判断训练进程还在不在？不在--上传,在--等待
             if not self.rds.exists(self.rds_name):
                 try:
                     asyncio.run(self.upload_all_files())

@@ -92,7 +92,7 @@ class BaseTrainer:
         csv (Path): Path to results CSV file.
     """
 
-    def __init__(self, rds=None, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
+    def __init__(self, rds=None, task_id=None, task_name=None, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         """
         Initializes the BaseTrainer class.
 
@@ -102,6 +102,8 @@ class BaseTrainer:
         """
         # zhd
         self.rds = rds
+        self.task_id = task_id
+        self.task_name = task_name
         self.args = get_cfg(cfg, overrides)
         self.check_resume(overrides)
         self.device = select_device(self.args.device, self.args.batch)
@@ -495,7 +497,7 @@ class BaseTrainer:
                     "metrics/mAP50": metrics["metrics/mAP50(B)"],
                     "metrics/mAP50-95": metrics["metrics/mAP50-95(B)"]
                 }
-                self.rds.xadd("train_001_猫狗训练_each_epoch_info", {
+                self.rds.xadd(f"{self.task_id}_{self.task_name}_each_epoch_info", {
                               "each_epoch_info": str(epoch_result).encode()}, maxlen=100)
                 self.stop |= self.stopper(
                     epoch + 1, self.fitness) or final_epoch

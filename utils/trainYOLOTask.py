@@ -17,7 +17,14 @@ import subprocess
 from redis import Redis
 from threading import Thread
 
-from config import data_cfg, train_result, pretrained_models, train_result_topic_name
+from config import (
+    data_cfg,
+    train_result,
+    pretrained_models,
+    redis_ip,
+    redis_port,
+    train_result_topic_name
+)
 from utils import find_pt
 
 
@@ -81,6 +88,7 @@ class trainYOLODetectTask(Thread):
         file.write('import shutil\n')
         # file.write('import datetime\n')
         file.write('from ultralytics import YOLO\n')
+        file.write('from redis import Redis\n')
         if self.trainType == 'Init':  # 初始化训练
             if self.netType.startswith('yolov5'):
                 file.write(
@@ -111,6 +119,8 @@ class trainYOLODetectTask(Thread):
             # file.write(f"{key} = {value}\n")
             train_params[key] = value
         file.write(f'train_params={train_params}\n')
+        file.write(
+            f"rds=Redis(host='{redis_ip}',port={redis_port},db={1})\n")
         file.write('model = YOLO(model_cfg).load(rds,model_path)\n')
         file.write('model.train(**train_params)\n')
         # 训练完成后的，模型移动操作代码块

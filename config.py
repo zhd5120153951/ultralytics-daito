@@ -31,6 +31,9 @@ export_host_msg = "AI_EXPORT_HOST_MSG"
 export_action_opt_topic_name = "AI_EXPORT_TASK_ACTION_OPT"  # 导出任务下发的消息流
 export_action_result_topic_name = "AI_EXPORT_TASK_ACTION_RESULT"  # 导出任务返回的消息流
 export_result_topic_name = "AI_EXPORT_TASK_RESULT"  # 导出结果的消息流
+# 支持的网络类型
+support_net_type = ["yolov3", "yolov5", "yolov8",
+                    "yolov9", "yolov10", "yolov11", "ylolov12"]
 # 数据集路径配置目录
 data_cfg = "data_cfg"
 # 预训练模型目录
@@ -42,3 +45,5 @@ minio_train_prefix = "train_result_package"
 minio_export_prefix = "export_result_package"
 # 导出结果目录
 export_result = "export_results"
+# 日志保存目录
+log = "logs"

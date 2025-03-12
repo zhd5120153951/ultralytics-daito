@@ -191,7 +191,6 @@ class trainService(BaseService):
                 0,
                 f"训练任务:{process_key}已经启动运行中,无需重复启动！",
                 create_time)
-            repeat_train_log.logger.info(f"训练任务:{process_key}已经启动运行中,无需重复启动！")
             return
         # 正常启动
         # 1.数据集并发下载
@@ -225,7 +224,7 @@ class trainService(BaseService):
             modelType,
             parameters,
             labels)
-        if curr_task.start_train_task():
+        if curr_task.start():
             self.process_manager.add_task(curr_task)
             create_time = datetime.datetime().now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -239,7 +238,6 @@ class trainService(BaseService):
         # 3.异步上传结果
         upload_train_result_log = Logger(
             f'./log/upload_train_result_{process_key}.txt', level='info')
-        # debug here!上传minio时需要依据训练进程的状态
         upload_minio = uploadMinio(self.rds,
                                    self.minio_client,
                                    'train',
@@ -252,8 +250,101 @@ class trainService(BaseService):
                                    "",
                                    upload_train_result_log)
         upload_minio.start()
+        # **************************************
+        # 确保没有相同训练任务
+        enableFlag = False
+        if taskName not in self.train_task_name:
+            enableFlag = True
+            self.train_task_name.append(taskName)
+        else:  # 同名训练任务不启动
+            enableFlag = False
+        if enableFlag:
+            from utils import Dataset
+            from utils import uploadMinio
+            # 开始训练--这里必须要异步
+            if modelType == 'classify':
+                pass
+            if modelType == 'detect':
+                from utils import trainYOLODetectTask
+                #######################################
+                download_datasets_log = Logger(
+                    f'./log/download_datasets_{taskId}_{taskName}.txt', level='info')
+                # 1.数据集处理
+                # 数据集配置文件及数据要提前构建
+                data_yaml_path = f'{data_cfg}/{taskId}_{taskName}.yaml'
+                if not modelId:  # 初始化训练
+                    trainType = 'Init'
+                else:  # 迭代训练
+                    trainType = 'iteration'
+                dataset = Dataset(self.minio_client,
+                                  'datasets',
+                                  'train',
+                                  prefix,
+                                  labels,
+                                  ratio,
+                                  data_yaml_path,
+                                  download_datasets_log)
+                dataset.start()
+                dataset.join()  # 阻塞此处,等待数据集的操作全部完成
+                ##############################################
+                # 2.异步训练
+                # 往Redis发一条数据下载的完成情况消息
+                self.upload_data_download_result(True)
+                # 用类(继承Thread)来启动训练任务--用类的方式更好
+                train_task_yolo_det = trainYOLODetectTask(self.rds,
+                                                          taskId,
+                                                          taskName,
+                                                          self.train_task_name,
+                                                          self.train_task_obj,
+                                                          labels,
+                                                          netType,
+                                                          trainType,
+                                                          modelId,
+                                                          parameters,
+                                                          self.upload_task_result)
+                train_task_yolo_det.start()
+                ##############################################
+                # 3.上传结果
+                # 上传训练结果到minio--都是异步的,但是一定要等到训练结束后才能开始上传
+                upload_train_result_log = Logger(
+                    f'./log/upload_train_result_{taskId}_{taskName}.txt', level='info')
+                upload_minio = uploadMinio(self.rds,
+                                           self.minio_client,
+                                           'train',
+                                           train_result,
+                                           taskId,
+                                           taskName,
+                                           minio_train_prefix,
+                                           'train',
+                                           # modelId是导出上次的模型名字(taskId_taskName),对于训练时,此参数不给
+                                           "",
+                                           upload_train_result_log)
+                upload_minio.start()
+                # upload_minio.join()#这里不能等待,不然下个训练消息来了会堵住while循环
+            elif modelType == 'segment':
+                pass
+            elif modelType == 'pose':
+                pass
+            else:
+                pass
+
+        else:
+            repeat_train_log = Logger(
+                f'./log/repeat_train_{taskName}.txt', level='info')
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
+            # 当前训练任务进程没结束
+            if psutil.pid_exists(self.train_task_obj[taskName].pid):
+                # 上传任务重复启动的消息到Redis(有用)
+                self.upload_task_result(
+                    'start', taskId, taskName, 0, f'训练任务:{taskName}已经启动运行中,无需重复启动！', create_time)
+            else:
+                repeat_train_log.logger.error(
+                    '此条日志出现说明程序出现bug,bug原因是前一个任务没结束(pid存在),然后重启一个同名任务,应该显示任务运行中.')
+            repeat_train_log.logger.info(f'训练任务:{taskName}的进程已经启动运行中,无需重复启动！')
 
     def stop_train_process(self, taskId, taskName):
+        # **********************************
         process_key = f"{taskId}_{taskName}"
         stop_train_log = Logger(
             f'./log/stop_train_{process_key}.txt', level='info')
@@ -268,14 +359,40 @@ class trainService(BaseService):
                 0,
                 f"训练任务{process_key}不存在或已经停止运行！", create_time)
             stop_train_log.logger.info(f"训练任务{process_key}已正常训练完成,后台进程已正常退出！")
+            return
         else:  # 非空--该任务还在训练中--需要终止
-            if task.stop_train_task():
+            if task.stop():
                 self.process_manager.remove_task(process_key)
                 create_time = datetime.datetime.now().strftime(
                     '%Y-%m-%d %H:%M:%S.%f')[:-3]
                 self.upload_task_result(
                     "stop", taskId, taskName, 1, f"训练任务{process_key}停止成功", create_time)
                 stop_train_log.logger.info(f"已正常停止正在训练中的任务:{process_key}！")
+        # ************************************
+        stop_train_log = Logger(
+            f'./log/stop_train_{taskId}_{taskName}.txt', level='info')
+        create_time = datetime.datetime.now().strftime(
+            '%Y-%m-%d %H:%M:%S.%f')[:-3]
+        if self.train_task_obj:  # 非空--该任务进程还在训练中--终止
+            subproc = self.train_task_obj[taskName]  # 后台训练进程对象
+            subproc.terminate()
+            try:
+                subproc.wait(5)  # 等5s内退出--优雅退出
+                stop_train_log.logger.info(f'已正常停止正在训练中的任务:{taskName}！')
+            except subprocess.TimeoutExpired as st:
+                # 退出超时--暴力退出
+                subproc.kill()
+                subproc.wait()
+                stop_train_log.logger.info(
+                    f'已暴力停止正在训练中的任务:{taskName},超时异常:{st}！')
+            # 训练任务停止成功--向Redis发送消息(有用)
+            self.upload_task_result(
+                'stop', taskId, taskName, 1, f'训练任务{taskName}停止成功', create_time)
+        else:  # 为空--该任务进程训练已结束--无需终止
+            # 训练任务已正常结束--向Redis发消息(无用)
+            # self.upload_task_result(
+            #     'stop', '12345', taskName, 0, f'训练任务{taskName}已正常完成,', create_time)
+            stop_train_log.logger.info(f'训练任务{taskName}已正常训练完成,后台进程已正常退出！')
 
     def run(self):
         signal.signal(signal.SIGINT, self.handle_signal)
