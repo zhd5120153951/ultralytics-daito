@@ -29,6 +29,11 @@ class DetectionTrainer(BaseTrainer):
         trainer.train()
         ```
     train()没有覆盖父类的,且初始化也是父类的
+    Examples:
+        >>> from ultralytics.models.yolo.detect import DetectionTrainer
+        >>> args = dict(model="yolo11n.pt", data="coco8.yaml", epochs=3)
+        >>> trainer = DetectionTrainer(overrides=args)
+        >>> trainer.train()
     """
 
     def build_dataset(self, img_path, mode="train", batch=None):
