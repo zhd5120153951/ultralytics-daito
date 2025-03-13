@@ -236,7 +236,7 @@ class trainService(BaseService):
             parameters,
             labels,
             start_train_log)
-        if curr_task.start_train_task():
+        if curr_task.start_train_task():  # 把self.process_manager传入TrainTask中,用于管理进程debug here
             self.process_manager.add_task(curr_task)
             create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
