@@ -22,9 +22,12 @@ from .logModels import Logger
 
 
 class uploadMinio(Thread):
-    '''通用的文件上传类'''
+    '''
+    1.通用的文件上传类
+    2.训练时采用这个类上传训练结果,导出时因为耗时短,所以直接在导出服务中上传
+    '''
 
-    def __init__(self, rds: Redis, minio_client: Minio, bucket: str, result: str, taskId: str, taskName: str, minio_prefix: str, uploadType: str, modelId, log: Logger, max_workers: int = 10):
+    def __init__(self, process_manager, rds: Redis, minio_client: Minio, bucket: str, result: str, taskId: str, taskName: str, minio_prefix: str, uploadType: str, modelId, log: Logger, max_workers: int = 10):
         """
         初始化uploadMinio类
         :param minio_client:    已初始化的Minio客户端
@@ -39,18 +42,23 @@ class uploadMinio(Thread):
         :param max_workers:     线程池最大工作线程数
         """
         super().__init__()
+        self.process_manager = process_manager
         self.rds = rds
+        self.process_key = f'{taskId}_{taskName}'
         self.minio_client = minio_client
         self.bucket = bucket
+        # **********************
+        # 之前的思想是判断训练，导出过程的流存不存在？不存在--上传，存在--等待
+        # 现在的思想是判断训练，导出进程存不存在？不存在--上传，存在--等待
         if uploadType == 'train':
-            self.rds_name = f'{taskId}_{taskName}_train_progress'  # 训练时的消息流名
+            # self.rds_name = f'{taskId}_{taskName}_train_progress'  # 训练时的消息流名
             # train--本地待上传的文件夹路径
             self.local_folder = f'{result}/{taskId}_{taskName}'
-
         else:
-            self.rds_name = f'{taskId}_{taskName}_export_progress'  # 导出时的消息流名
+            # self.rds_name = f'{taskId}_{taskName}_export_progress'  # 导出时的消息流名
             # export--本地待上传的文件夹路径
             self.local_folder = f'{result}/{modelId}_paddle_model'
+        # **********************
         # 去除末尾的'/',方便后续路径拼接
         # 桶内目标目录前缀(上传后所有文件存放在该目录下)
         self.remote_prefix = f'{minio_prefix}/{taskId}_{taskName}'.rstrip('/')
@@ -106,8 +114,20 @@ class uploadMinio(Thread):
         重写Thread的run方法,启动asyncio事件循环执行所有上传任务
         """
         time.sleep(10)
-        while True:  # 判断训练进程还在不在？不在--上传,在--等待
-            if not self.rds.exists(self.rds_name):
+        # while True:  # 判断训练/导出流还在不在？不在--上传,在--等待
+        #     if not self.rds.exists(self.rds_name):
+        #         try:
+        #             asyncio.run(self.upload_all_files())
+        #         except Exception as ex:
+        #             self.log.logger.error(f'上传过程发生错误:{ex}')
+        #         break
+        #     else:
+        #         time.sleep(3)
+        #         continue
+        while True:
+            # 此时对应的训练/导出任务已经结束--上传
+            if not self.process_manager.get_task(self.process_key):
+                print("进程已结束..........................")
                 try:
                     asyncio.run(self.upload_all_files())
                 except Exception as ex:
@@ -116,3 +136,4 @@ class uploadMinio(Thread):
             else:
                 time.sleep(3)
                 continue
+        self.log.logger.info(f'上传任务{self.process_key}结束')

@@ -1,14 +1,15 @@
+'''
+@FileName   :common.py
+@Description:
+@Date       :2025/03/13 14:33:50
+@Author     :daito
+@Website    :Https://github.com/zhd5120153951
+@Copyright  :daito
+@License    :None
+@version    :1.0
+@Email      :2462491568@qq.com
+'''
 import os
-import re
-import json
-import subprocess
-import psutil
-import datetime
-from redis import Redis
-from config import (train_result_topic_name,
-                    data_cfg,
-                    pretrained_models,
-                    train_result)
 
 
 def file_save(fileDir: str, fileName: str, file):

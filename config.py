@@ -31,9 +31,18 @@ export_host_msg = "AI_EXPORT_HOST_MSG"
 export_action_opt_topic_name = "AI_EXPORT_TASK_ACTION_OPT"  # 导出任务下发的消息流
 export_action_result_topic_name = "AI_EXPORT_TASK_ACTION_RESULT"  # 导出任务返回的消息流
 export_result_topic_name = "AI_EXPORT_TASK_RESULT"  # 导出结果的消息流
-# 支持的网络类型
-support_net_type = ["yolov3", "yolov5", "yolov8",
-                    "yolov9", "yolov10", "yolov11", "ylolov12"]
+# 支持训练的网络类型
+support_net_type = [
+    # "yolov3",#性能太差
+    "yolov5n", "yolov5s", "yolov5m", "yolov5l",
+    "yolov8n", "yolov8s", "yolov8m", "yolovv8l",
+    # "yolov9",#仅有det+seg
+    "yolov10n", "yolov10s", "yolov10m", "yolov10l",
+    "yolov11n", "yolov11s", "yolov11m", "yolov11l",
+    "ylolov12n", "yolov12s", "yolov12m", "yolov12l"
+]
+# 支持导出的模型格式
+support_export_type = ["paddle", "onnx", "torchscript", "tensorrt", "rknn"]
 # 数据集路径配置目录
 data_cfg = "data_cfg"
 # 预训练模型目录
@@ -46,4 +55,6 @@ minio_export_prefix = "export_result_package"
 # 导出结果目录
 export_result = "export_results"
 # 日志保存目录
-log = "logs"
+logs = "logs"
+# 异步上传文件的线程池最大工作线程数
+max_workers = 10

@@ -15,19 +15,19 @@ import minio
 import time
 import datetime
 import json
-import psutil
+# import psutil
 import signal
-import subprocess
+# import subprocess
 from utils import Logger
-from services import ProcessManager, TrainTask
+from services.process import ProcessManager
 from config import (IP, minio_endpoint,
                     minio_access_key,
                     minio_secret_key,
                     data_cfg,
                     train_result,
-                    export_result,
                     minio_train_prefix,
-                    minio_export_prefix)
+                    minio_export_prefix,
+                    max_workers)
 
 
 class BaseService:
@@ -36,7 +36,8 @@ class BaseService:
     def __init__(self,
                  redis_ip,
                  redis_port,
-                 redis_pwd):
+                 redis_pwd,
+                 logs):
         self.redis_pool = redis.ConnectionPool(host=redis_ip,
                                                port=redis_port,
                                                password=redis_pwd,
@@ -49,6 +50,7 @@ class BaseService:
             access_key=minio_access_key,
             secret_key=minio_secret_key,
             secure=False)
+        self.logs = logs
         self.process_manager = ProcessManager()
 
     def getAvailableGPUId(self, log: Logger):
@@ -94,10 +96,7 @@ class BaseService:
             sig (_type_): 信号
             frame (_type_): 栈帧
         """
-        print(f"Received signal is: {sig}\nReceived frame is: {frame}")
-        self.process_manager.stop_all_tasks()
-        print("All processes have been stopped.")
-        exit(0)
+        pass
 
 
 class trainService(BaseService):
@@ -105,23 +104,32 @@ class trainService(BaseService):
                  redis_ip,
                  redis_port,
                  redis_pwd,
+                 logs,
                  train_host_msg,
                  train_action_opt_topic_name,
                  train_action_result_topic_name,
                  train_data_download_topic_name):
-        super().__init__(
-            redis_ip,
-            redis_port,
-            redis_pwd)
+        super().__init__(redis_ip,
+                         redis_port,
+                         redis_pwd,
+                         logs)
         # ... 子类的初始化代码 ...
         self.train_host_msg = train_host_msg
         self.train_action_opt_topic_name = train_action_opt_topic_name
         self.train_action_result_topic_name = train_action_result_topic_name
         self.train_data_download_topic_name = train_data_download_topic_name
-        # 已经运行的训练任务名--用于判断是否重复启动任务
-        self.train_task_name = []
-        # 已经运行的训练任务后台进程--用于判断是否能够正常停止当前任务
-        self.train_task_obj = {}
+
+    def handle_signal(self, sig, frame):
+        """_summary_
+
+        Args:
+            sig (_type_): 信号
+            frame (_type_): 栈帧
+        """
+        print(f"Train received signal is: {sig}\nReceived frame is: {frame}")
+        self.process_manager.stop_all_tasks()
+        print("All train processes have been stopped.")
+        exit(0)
 
     def get_task_message(self, train_task_action_opt_msg: dict):
         action = train_task_action_opt_msg['action']
@@ -175,13 +183,12 @@ class trainService(BaseService):
         pass
 
     def start_train_process(self, taskId: str, taskName: str, modelId: str, netType: str, modelType: str, prefix: list, labels: list, ratio: float, parameters: dict):
-        # **************************************
         # 每个任务进程的唯一标识
         process_key = f"{taskId}_{taskName}"
         # 重复启动
         if self.process_manager.get_task(process_key):
             repeat_train_log = Logger(
-                f'./log/repeat_train_{process_key}.txt', level='info')
+                f'{self.logs}/repeat_train_log_{process_key}.txt', level='info')
             create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
             self.upload_task_result(
@@ -193,12 +200,13 @@ class trainService(BaseService):
                 create_time)
             repeat_train_log.logger.info(f"训练任务:{process_key}已经启动运行中,无需重复启动！")
             return
-        # 正常启动
+        # 正常启动训练
         # 1.数据集并发下载
         from utils import Dataset, uploadMinio
+        from services import TrainTask
         downlaod_datasets_log = Logger(
-            f"./log/download_datasets_{process_key}.txt", level="info")
-        data_yaml_path = f"{data_cfg}/{taskId}_{taskName}.yaml"
+            f"{self.logs}/download_datasets_log_{process_key}.txt", level="info")
+        data_yaml_path = f"{data_cfg}/{process_key}.yaml"
         if not modelId:  # 初始化训练
             trainType = "Init"
         else:  # 迭代训练
@@ -215,6 +223,8 @@ class trainService(BaseService):
         dataset.join()  # 这里阻塞,等待数据集的操作全部完成才能训练
         self.upload_data_download_result(True)
         # 2.异步训练--classify,detect,obb,segment,pose
+        start_train_log = Logger(
+            f"{self.logs}/start_train_log_{process_key}.txt", level="info")
         curr_task = TrainTask(
             self.rds,
             taskId,
@@ -224,23 +234,31 @@ class trainService(BaseService):
             modelId,
             modelType,
             parameters,
-            labels)
+            labels,
+            start_train_log)
         if curr_task.start_train_task():
             self.process_manager.add_task(curr_task)
-            create_time = datetime.datetime().now().strftime(
+            create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
             self.upload_task_result(
                 "start", taskId, taskName, 1, f"训练任务:{process_key}启动成功", create_time)
         else:
-            create_time = datetime.datetime().now().strftime(
+            create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
             self.upload_task_result(
                 "start", taskId, taskName, 0, f"训练任务:{process_key}启动失败", create_time)
+            # 设置训练状态为失败
+            try:
+                self.rds.hset(f'{taskId}_{taskName}_train_progress', mapping={
+                              'status': -1, 'error': '训练进程启动失败'})
+            except Exception as redis_ex:
+                start_train_log.logger.error(f"更新训练状态失败: {redis_ex}")
+            return  # 训练失败,直接返回,不上传训练结果
         # 3.异步上传结果
         upload_train_result_log = Logger(
-            f'./log/upload_train_result_{process_key}.txt', level='info')
-        # debug here!上传minio时需要依据训练进程的状态
-        upload_minio = uploadMinio(self.rds,
+            f'{self.logs}/upload_train_result_log_{process_key}.txt', level='info')
+        upload_minio = uploadMinio(self.process_manager,
+                                   self.rds,
                                    self.minio_client,
                                    'train',
                                    train_result,
@@ -248,15 +266,16 @@ class trainService(BaseService):
                                    taskName,
                                    minio_train_prefix,
                                    'train',
-                                   # modelId是导出上次的模型名字(taskId_taskName),对于训练时,此参数不给
+                                   # modelId是导出上次的模型名字(taskId_taskName),对于训练时,此参数可任意给
                                    "",
-                                   upload_train_result_log)
+                                   upload_train_result_log,
+                                   max_workers)
         upload_minio.start()
 
     def stop_train_process(self, taskId, taskName):
         process_key = f"{taskId}_{taskName}"
         stop_train_log = Logger(
-            f'./log/stop_train_{process_key}.txt', level='info')
+            f'{self.logs}/stop_train_log_{process_key}.txt', level='info')
         task = self.process_manager.get_task(process_key)
         if not task:  # 为空--该任务进程训练已结束--无需终止
             create_time = datetime.datetime.now().strftime(
@@ -279,9 +298,10 @@ class trainService(BaseService):
 
     def run(self):
         signal.signal(signal.SIGINT, self.handle_signal)
+        signal.signal(signal.SIGTERM, self.handle_signal)
         # 消费平台下发的训练任务消息
         train_action_opt_log = Logger(
-            f'./log/train_action_opt.txt', level='info')
+            f'{self.logs}/train_action_opt.txt', level='info')
         group_name = ''.join(['action_', IP])
         if not self.rds.exists(self.train_action_opt_topic_name) or not self.check_consumer_group_exists(self.train_action_opt_topic_name, group_name):
             self.rds.xgroup_create(
@@ -337,9 +357,8 @@ class trainService(BaseService):
                         # 用这个可以对应多个训练任务
                         # 初始化训练进度0--未开始,1--进行中,-1--失败
                         # self.rds.hdel()--删除train_progress
-                        self.rds.hset(f'{taskId}_{taskName}_train_progress', mapping={
-                                      'status': 0, 'epoch': 0})
-
+                        # self.rds.hset(f'{taskId}_{taskName}_train_progress', mapping={
+                        #               'status': 0, 'epoch': 0})
                         self.start_train_process(
                             taskId,
                             taskName,
@@ -364,18 +383,30 @@ class exportService(BaseService):
                  redis_ip,
                  redis_port,
                  redis_pwd,
+                 logs,
                  export_host_msg,
                  export_action_opt_topic_name,
                  export_action_result_topic_name):
-        super().__init__(redis_ip, redis_port, redis_pwd)
+        super().__init__(redis_ip,
+                         redis_port,
+                         redis_pwd,
+                         logs)
         # ... 子类初始化代码 ...
         self.export_host_msg = export_host_msg
         self.export_action_opt_topic_name = export_action_opt_topic_name
         self.export_action_result_topic_name = export_action_result_topic_name
-        # 已经运行的导出任务名--用于判断是否重复启动任务
-        self.export_task_name = []
-        # 已经运行的导出任务后台进程--用于判断是否能够正常停止当前任务
-        self.export_task_obj = {}
+
+    def handle_signal(self, sig, frame):
+        """_summary_
+
+        Args:
+            sig (_type_): 信号
+            frame (_type_): 栈帧
+        """
+        print(f"Export received signal is: {sig}\nReceived frame is: {frame}")
+        self.process_manager.stop_all_tasks()
+        print("All export processes have been stopped.")
+        exit(0)
 
     def get_task_message(self, export_task_action_opt_msg: dict):
         action = export_task_action_opt_msg['action']
@@ -402,108 +433,91 @@ class exportService(BaseService):
         message_id = self.rds.xadd(self.export_action_result_topic_name, {
                                    'result': str(task_result).encode()}, maxlen=100)
 
-    def signal_handler(self, sig, frame):
-        """_summary_
-
-        Args:
-            sig (_type_): 信号
-            frame (_type_): 栈帧
-        """
-        print("接收到终止信号,正在清理资源...")
-        self.process_manager.stop_all_tasks()
-        print("资源清理完成,退出程序!")
-        exit(0)
-
     def start_export_process(self, taskId, taskName, modelId, exportType):
-        """taskId,taskName是本次导出的任务id和name,modelId(taskId_taskName)是之前训练时的id和name,用于找到pt
         """
-        # 确保没有相同导出任务
-        enableFlag = False
-        if taskName not in self.export_task_name:
-            enableFlag = True
-            self.export_task_name.append(taskName)
-        else:  # 同名导出任务不启动
-            enableFlag = False
-        if enableFlag:
-            # 开始导出--这里必须要异步
-            if exportType == 'paddle':
-                from utils import uploadMinio
-                from utils import exportPaddleTask
-                # 开启导出
-                export_task = exportPaddleTask(
-                    self.rds,
-                    taskId,
-                    taskName,
-                    self.export_task_name,
-                    self.export_task_obj,
-                    modelId,
-                    self.upload_task_result)
-                export_task.start()
-                export_task.join()  # 导出结束后才能上传
-                # 上传结果
-                upload_export_result_log = Logger(
-                    f'./log/upload_export_result_{taskId}_{taskName}.txt', level='info')
-                upload_minio = uploadMinio(self.rds,
-                                           self.minio_client,
-                                           'train',
-                                           export_result,
-                                           taskId,
-                                           taskName,
-                                           minio_export_prefix,
-                                           'export',
-                                           modelId,
-                                           upload_export_result_log)
-                upload_minio.start()
-                # upload_minio.join()#这里不能等待,不然下个训练消息来了会堵住while循环
-            else:  # rknn
-                pass
-        else:
+        taskId,taskName是本次导出的任务id和name,modelId(taskId_taskName)是之前训练时的id和name,用于找到pt
+        """
+        # 每个任务进程的唯一标识
+        process_key = f"{taskId}_{taskName}"
+        if self.process_manager.get_task(process_key):
             repeat_export_log = Logger(
-                f'./log/repeat_export_{taskId}_{taskName}.txt', level='info')
+                f'{self.logs}/repeat_export_log_{process_key}.txt', level='info')
             create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
-            # 当前训练任务进程没结束
-            if psutil.pid_exists(self.export_task_obj[taskName].pid):
-                # 上传任务重复启动的消息到Redis(有用)
-                self.upload_task_result(
-                    'start', taskId, taskName, 0, f'导出任务:{taskName}已经启动运行中,无需重复启动！', create_time)
-            else:
-                repeat_export_log.logger.error(
-                    '此条日志出现说明程序出现bug,bug原因是前一个任务没结束(pid存在),然后重启一个同名任务,应该显示任务运行中.')
+            self.upload_task_result(
+                'start',
+                taskId,
+                taskName,
+                0,
+                f'导出任务:{process_key}已经启动运行中,无需重复启动！', create_time)
             repeat_export_log.logger.info(
-                f'导出任务:{taskId}_{taskName}的进程已经启动运行中,无需重复启动！')
+                f'导出任务:{process_key}已经启动运行中,无需重复启动！')
+            return
+        # 正常启动导出
+        from services import ExportTask
+        start_export_log = Logger(
+            f'{self.logs}/start_export_log_{process_key}.txt', level='info')
+        curr_task = ExportTask(
+            taskId,
+            taskName,
+            modelId,
+            exportType,
+            self.minio_client,
+            "train",
+            minio_export_prefix,
+            max_workers,
+            start_export_log,
+            self.rds)  # 传递Redis客户端，用于状态更新和消息发送
+        # 这里和训练不一样,导出时间较短,直接在一个进程中启动导出、上传
+        if curr_task.start_export_task():
+            self.process_manager.add_task(curr_task)
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
+            self.upload_task_result(
+                'start', taskId, taskName, 1, f'导出任务:{process_key}启动成功', create_time)
+        else:
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
+            self.upload_task_result(
+                'start', taskId, taskName, 0, f'导出任务:{process_key}启动失败', create_time)
+            # 设置导出状态为失败
+            try:
+                self.rds.hset(f'{taskId}_{taskName}_export_progress', mapping={
+                              'status': -1, 'error': '导出进程启动失败'})
+            except Exception as redis_ex:
+                start_export_log.logger.error(f"更新导出状态失败: {redis_ex}")
+            return  # 导出失败,直接返回,不上传导出结果
 
     def stop_export_process(self, taskId, taskName):
+        process_key = f"{taskId}_{taskName}"
         stop_export_log = Logger(
-            f'./log/stop_export_{taskId}_{taskName}.txt', level='info')
-        create_time = datetime.datetime.now().strftime(
-            '%Y-%m-%d %H:%M:%S.%f')[:-3]
-        if self.export_task_obj:  # 非空--该任务进程还在训练中--终止
-            subproc = self.export_task_obj[taskName]  # 后台训练进程对象
-            subproc.terminate()
-            try:
-                subproc.wait(5)  # 等5s内退出--优雅退出
-                stop_export_log.logger.info(f'已正常停止正在导出中的任务:{taskName}！')
-            except subprocess.TimeoutExpired as st:
-                # 退出超时--暴力退出
-                subproc.kill()
-                subproc.wait()
-                stop_export_log.logger.info(
-                    f'已暴力停止正在训练中的任务:{taskName},超时异常:{st}！')
-            # 训练任务停止成功--向Redis发送消息(有用)
+            f'{self.logs}/stop_export_log_{process_key}.txt', level='info')
+        task = self.process_manager.get_task(process_key)
+        if not task:  # 为空--该任务进程导出已结束--无需终止
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
             self.upload_task_result(
-                'stop', taskId, taskName, 1, f'导出任务{taskName}停止成功', create_time)
-        else:  # 为空--该任务进程训练已结束--无需终止
-            # 训练任务已正常结束--向Redis发消息(无用)
-            # self.upload_task_result(
-            #     'stop', '12345', taskName, 0, f'训练任务{taskName}已正常完成,', create_time)
-            stop_export_log.logger.info(f'导出任务{taskName}已正常导出完成,后台进程已正常退出！')
+                'stop',
+                taskId,
+                taskName,
+                0,
+                f'导出任务{process_key}不存在或已经停止运行！', create_time)
+            stop_export_log.logger.info(f'导出任务{process_key}已正常导出完成,后台进程已正常退出！')
+        else:  # 非空--该任务还在导出中--需要终止
+            if task.stop_export_task():
+                self.process_manager.remove_task(process_key)
+                create_time = datetime.datetime.now().strftime(
+                    '%Y-%m-%d %H:%M:%S.%f')[:-3]
+                self.upload_task_result(
+                    'stop', taskId, taskName, 1, f'导出任务{process_key}停止成功', create_time)
+                stop_export_log.logger.info(f'已正常停止正在导出中的任务:{process_key}！')
 
     def run(self):
         signal.signal(signal.SIGINT, self.handle_signal)
+        signal.signal(signal.SIGTERM, self.handle_signal)
         # 消费平台下发的导出任务消息
         export_action_opt_log = Logger(
-            f'./log/export_action_opt.txt', level='info')
+            f'{self.logs}/export_action_opt.txt', level='info')
         group_name = ''.join(['action_', IP])
         if not self.rds.exists(self.export_action_opt_topic_name) or not self.check_consumer_group_exists(self.export_action_opt_topic_name, group_name):
             self.rds.xgroup_create(
@@ -558,9 +572,11 @@ class exportService(BaseService):
                     else:
                         # self.rds.hset(f'{taskId}_{taskName}_train_progress', mapping={
                         #               'status': 0, 'epoch': 0})
-                        # 导出很快,不需要发送中间过程,只需要告诉最终的导出成功与否?
                         self.start_export_process(
-                            taskId, taskName, modelId, exportType)
+                            taskId,
+                            taskName,
+                            modelId,
+                            exportType)
                         export_action_opt_log.logger.info(
                             f'导出任务:{taskName}启动时检测到可用GPU:{availableGPUId}的利用率最低,且利用率:{gpu_unit_use}')
                         time.sleep(10)
