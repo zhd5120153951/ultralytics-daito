@@ -88,8 +88,10 @@ class BaseTrainer:
         fitness (float): Current fitness value.
         loss (float): Current loss value.
         tloss (float): Total loss value.
-        loss_names (list): List of loss names.
+        loss_names (List): List of loss names.
         csv (Path): Path to results CSV file.
+        metrics (Dict): Dictionary of metrics.
+        plots (Dict): Dictionary of plots.
     """
 
     def __init__(self, rds=None, task_id=None, task_name=None, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
@@ -98,7 +100,8 @@ class BaseTrainer:
 
         Args:
             cfg (str, optional): Path to a configuration file. Defaults to DEFAULT_CFG.
-            overrides (dict, optional): Configuration overrides. Defaults to None.
+            overrides (Dict, optional): Configuration overrides. Defaults to None.
+            _callbacks (List, optional): List of callback functions. Defaults to None.
         """
         # zhd
         self.rds = rds
