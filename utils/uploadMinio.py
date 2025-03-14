@@ -27,7 +27,7 @@ class uploadMinio(Thread):
     2.训练时采用这个类上传训练结果,导出时因为耗时短,所以直接在导出服务中上传
     '''
 
-    def __init__(self, process_manager, rds: Redis, minio_client: Minio, bucket: str, result: str, taskId: str, taskName: str, minio_prefix: str, uploadType: str, modelId, log: Logger, max_workers: int = 10):
+    def __init__(self, rds: Redis, minio_client: Minio, bucket: str, result: str, taskId: str, taskName: str, minio_prefix: str, uploadType: str, modelId, log: Logger, max_workers: int = 10):
         """
         初始化uploadMinio类
         :param minio_client:    已初始化的Minio客户端
@@ -42,9 +42,9 @@ class uploadMinio(Thread):
         :param max_workers:     线程池最大工作线程数
         """
         super().__init__()
-        self.process_manager = process_manager
         self.rds = rds
         self.process_key = f'{taskId}_{taskName}'
+        self.train_task_status_topic_name = f"{self.process_key}_status_info"
         self.minio_client = minio_client
         self.bucket = bucket
         # **********************
@@ -113,21 +113,9 @@ class uploadMinio(Thread):
         """
         重写Thread的run方法,启动asyncio事件循环执行所有上传任务
         """
-        time.sleep(10)
-        # while True:  # 判断训练/导出流还在不在？不在--上传,在--等待
-        #     if not self.rds.exists(self.rds_name):
-        #         try:
-        #             asyncio.run(self.upload_all_files())
-        #         except Exception as ex:
-        #             self.log.logger.error(f'上传过程发生错误:{ex}')
-        #         break
-        #     else:
-        #         time.sleep(3)
-        #         continue
-        while True:
-            # 此时对应的训练/导出任务已经结束--上传
-            if not self.process_manager.get_task(self.process_key):
-                print("进程已结束..........................")
+        time.sleep(5)
+        while True:  # 判断训练还在不在？不在--上传,在--等待
+            if not self.rds.exists(self.train_task_status_topic_name):
                 try:
                     asyncio.run(self.upload_all_files())
                 except Exception as ex:

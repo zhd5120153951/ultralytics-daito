@@ -17,32 +17,47 @@ class ProcessManager:
     """
 
     def __init__(self):
-        self.active_tasks = {}
+        self.active_procs = {}
 
-    def add_task(self, task):
+    def add_proc(self, process_key, process):
         """_summary_
-        添加任务
+        添加进程
         """
-        self.active_tasks[task.process_key] = task
+        self.active_procs[process_key] = process
 
-    def remove_task(self, process_key):
+    def remove_proc(self, process_key):
         """_summary_
-        移除任务
+        移除进程
         """
-        if process_key in self.active_tasks:
-            del self.active_tasks[process_key]
+        del self.active_procs[process_key]
 
-    def get_task(self, process_key):
+    def get_proc(self, process_key):
         """_summary_
-        获取任务
+        获取进程
         """
-        return self.active_tasks.get(process_key, None)
+        return self.active_procs.get(process_key, None)
 
-    def stop_all_tasks(self):
+    def stop_proc(self, process_key):
         """_summary_
-        停止所有任务
+
+        停止进程
         """
-        for task in list(self.active_tasks.values()):
-            task.stop_train_task()
-            self.remove_task(task.process_key)
-        print("All tasks have been stopped.")
+        task_proc = self.get_proc(process_key)
+        if not task_proc:
+            print(f"当前任务:{process_key}进程不存在,无需退出！")
+        elif task_proc.is_alive():
+            task_proc.terminate()
+            task_proc.join(5)
+            if task_proc.is_alive():
+                task_proc.kill()
+            print(f"当前任务:{process_key}进程成功停止.")
+        print(f"当前任务:{process_key}已完成,无需停止.")
+
+    def stop_all_procs(self):
+        """_summary_
+        停止所有进程
+        """
+        for proc in list(self.active_procs.values()):
+            proc.stop_train_task()
+            self.remove_task(proc.process_key)
+        print("All process have been stopped.")
