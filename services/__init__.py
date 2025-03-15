@@ -4,5 +4,6 @@ from .task import ExportTask
 __all__ = [
     'trainService',
     'exportService',
-    'ExportTask'
+    'ExportTask',
+    'TrainTask'
 ]

@@ -13,11 +13,10 @@ import os
 import shutil
 import time
 import asyncio
-import multiprocessing as mp
 from minio.error import S3Error
 from concurrent.futures import ThreadPoolExecutor
 from ultralytics import YOLO
-from utils import find_pt, uploadMinio
+from utils import find_pt
 from config import (data_cfg,
                     pretrained_models,
                     train_result,
@@ -31,8 +30,7 @@ class TrainTask:
     训练任务类:负责单个训练任务的执行和管理
     """
 
-    def __init__(self, process_manager, rds, task_id, task_name, net_type, train_type, model_id, model_type, parameters, labels, log):
-        self.process_manager = process_manager
+    def __init__(self, rds, task_id, task_name, net_type, train_type, model_id, model_type, parameters, labels, log):
         self.rds = rds
         self.task_id = task_id
         self.task_name = task_name
@@ -66,8 +64,8 @@ class TrainTask:
         启动训练任务
         """
         try:
-            self.rds.hset(f'{self.process_key}_status_info', mapping={
-                'status': 1})
+            self.rds.hset(f'{self.process_key}_train_status_info', mapping={
+                'status': 1, "context": "训练中"})
             train_params = {
                 "data": f"{data_cfg}/{self.process_key}.yaml",
                 "project": train_result,
@@ -76,7 +74,6 @@ class TrainTask:
             }  # 训练参数--根据传递参数生成的部分
             for key, value in self.parameters.items():
                 train_params[key] = value  # 训练参数--传递参数固定部分
-
             if self.net_type in support_net_type:
                 if self.train_type == "Init":  # 初始化
                     if self.net_type.startswith("yolov5"):
@@ -100,7 +97,6 @@ class TrainTask:
                 error_msg = f"不支持的网络类型:{self.net_type},目前支持的网络类型有:{support_net_type}"
                 self.log.logger.error(error_msg)
                 return
-
             # 加载模型
             self.log.logger.info(f"开始加载模型:{model_cfg},权重路径:{model_path}")
             model = YOLO(model_cfg).load(
@@ -108,7 +104,6 @@ class TrainTask:
                 self.task_id,
                 self.task_name,
                 model_path)
-
             # 开始训练
             self.log.logger.info(f"开始训练模型,训练参数:{train_params}")
             start_time = time.time()
@@ -116,26 +111,20 @@ class TrainTask:
             # 训练完成，复制模型文件
             model_trained_path = f"{train_result}/{self.process_key}/weights/best.pt"
             model_rename_path = f"{export_result}/{self.process_key}.pt"
-
             if not os.path.exists(model_trained_path):
                 raise FileNotFoundError(f"训练完成后找不到模型文件:{model_trained_path}")
-
             shutil.copy(model_trained_path, model_rename_path)
             self.log.logger.info(
                 f"训练任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s")
-            self.rds.hdel(f"{self.process_key}_status_info",
-                          "status")
+            self.rds.hdel(f"{self.process_key}_train_status_info",
+                          ("status", "context"))
         except Exception as ex:
             error_msg = f"训练任务:{self.process_key}执行过程中发生异常:{ex}"
             self.log.logger.error(error_msg)
 
-    def upload_minio(self):
-        pass
-
     def stop_train_task(self):
         """_summary_
         停止训练任务
-        return: bool:是否成功停止训练任务.True--成功停止,False--停止失败
         """
         pass
 
@@ -163,8 +152,6 @@ class ExportTask:
         self.bucket = bucket
         self.log = log
         self.rds = rds  # 添加Redis客户端，用于状态更新和消息发送
-        self.process = None
-        self.start_time = None
         self.process_key = f"{task_id}_{task_name}"  # 进程名:任务id_任务名称
         self.local_folder = f"{export_result}/{model_id}_paddle_model"
         self.remote_prefix = f"{minio_prefix}/{task_id}_{task_name}".rstrip(
@@ -209,68 +196,45 @@ class ExportTask:
             tasks.append(self.upload_file(full_path, rel_path))
         await asyncio.gather(*tasks)  # 并发执行所有上传任务,此处会阻塞直到所有任务完成
 
-    def _export_process(self):
+    def start_export_task(self):
+        """_summary_
+        启动导出任务
+        return True--成功,False--失败
+3        """
+        # 启动任务
         try:
-            # 设置导出状态为进行中
-            if hasattr(self, 'rds') and self.rds:
-                try:
-                    self.rds.hset(
-                        f'{self.task_id}_{self.task_name}_export_progress', mapping={'status': 1})
-                except Exception as redis_ex:
-                    self.log.logger.error(f"设置导出状态失败: {redis_ex}")
-
-            model_path = f"{export_result}/{self.process_key}.pt"
-            imgsz = [640, 640]
-
+            model_path = f"{export_result}/{self.model_id}.pt"
+            imgsz = [640, 640]  # 这里导出模型输入尺寸可以由web给出
             # 检查模型文件是否存在
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"找不到要导出的模型文件:{model_path}")
-
             if self.export_type in support_export_type:
                 self.log.logger.info(
                     f"开始导出模型:{model_path},格式:{self.export_type}")
                 model = YOLO(model_path)
+                start_time = time.time()
                 model.export(format=self.export_type,
                              imgsz=imgsz,
                              opset=12,
                              device="0")
                 # 上传导出结果
                 try:
-                    self.log.logger.info(f"开始上传导出结果到MinIO")
+                    self.log.logger.info(f"开始上传导出结果到MinIO.")
                     asyncio.run(self.upload_all_files())
-                    self.log.logger.info(f"导出结果上传完成")
+                    self.log.logger.info(
+                        f"导出任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s")
+                    self.log.logger.info(f"导出结果上传完成.")
+                    return True
                 except Exception as ex:
-                    self.log.logger.error(f"上传导出结果失败: {ex}")
-                    raise
-                self.log.logger.info(
-                    f"导出任务:{self.process_key}完成,耗时:{(time.time()-self.start_time):.3f}s")
-                # 设置导出状态为完成
-                if hasattr(self, 'rds') and self.rds:
-                    try:
-                        self.rds.hset(
-                            f'{self.task_id}_{self.task_name}_export_progress', mapping={'status': 2})
-                    except Exception as redis_ex:
-                        self.log.logger.error(f"更新导出状态失败: {redis_ex}")
+                    self.log.logger.error(f"上传导出结果失败:{ex}")
+                    return False
             else:
                 error_msg = f"不支持的导出类型:{self.export_type},目前支持的导出类型有:{support_export_type}"
                 self.log.logger.error(error_msg)
-                if hasattr(self, 'rds') and self.rds:
-                    try:
-                        self.rds.hset(f'{self.task_id}_{self.task_name}_export_progress', mapping={
-                                      'status': -1, 'error': error_msg})
-                    except Exception as redis_ex:
-                        self.log.logger.error(f"更新导出状态失败: {redis_ex}")
-                return
+                raise "不支持的到处类型."
         except Exception as ex:
             error_msg = f"导出任务:{self.process_key}执行过程中发生异常:{ex}"
             self.log.logger.error(error_msg)
-            # 设置导出状态为失败
-            if hasattr(self, 'rds') and self.rds:
-                try:
-                    self.rds.hset(f'{self.task_id}_{self.task_name}_export_progress', mapping={
-                                  'status': -1, 'error': str(ex)})
-                except Exception as redis_ex:
-                    self.log.logger.error(f"更新导出状态失败: {redis_ex}")
             # 上传失败信息到结果消息流
             try:
                 import datetime
@@ -292,34 +256,13 @@ class ExportTask:
             except Exception as result_ex:
                 self.log.logger.error(f"上传导出失败结果时发生异常:{result_ex}")
             # 确保进程能够正常退出
-            return
-
-    def start_export_task(self):
-        """_summary_
-        启动导出任务
-        return: bool:是否成功启动导出任务.True--成功启动,False--启动失败
-        """
-        self.start_time = time.time()
-        # 启动进程
-        self.process = mp.Process(
-            target=self._export_process)
-        self.process.start()
-        if self.process.is_alive():
-            return True
-        return False
+            return False
 
     def stop_export_task(self):
         """_summary_
         停止导出任务
-        return: bool:是否成功停止导出任务.True--成功停止,False--停止失败
         """
-        if self.process and self.process.is_alive():
-            self.process.terminate()
-            self.process.join(timeout=5)
-            if self.process.is_alive():
-                self.process.kill()
-            return True
-        return False
+        pass
 
     def get_export_task_status(self):
         pass

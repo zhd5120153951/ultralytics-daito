@@ -67,27 +67,32 @@ def main():
         if not os.path.exists(dir):
             os.makedirs(dir, exist_ok=True)
 
-    # 启动导出任务进程
-    export_service = exportService(redis_ip,
-                                   redis_port,
-                                   redis_pwd,
-                                   logs,
-                                   export_host_msg,
-                                   export_action_opt_topic_name,
-                                   export_action_result_topic_name)
-    export_proc = multiprocessing.Process(target=export_service.run)
-    export_proc.daemon = True
-    export_proc.start()
-    # 启动训练任务进程
-    train_service = trainService(redis_ip,
-                                 redis_port,
-                                 redis_pwd,
-                                 logs,
-                                 train_host_msg,
-                                 train_action_opt_topic_name,
-                                 train_action_result_topic_name,
-                                 train_data_download_topic_name)
-    train_service.run()
+    # 启动导出任务进程z
+    try:
+        export_service = exportService(redis_ip,
+                                       redis_port,
+                                       redis_pwd,
+                                       logs,
+                                       export_host_msg,
+                                       export_action_opt_topic_name,
+                                       export_action_result_topic_name)
+        export_proc = multiprocessing.Process(target=export_service.run)
+        # export_proc.daemon = True
+        export_proc.start()
+        # 启动训练任务进程
+        train_service = trainService(redis_ip,
+                                     redis_port,
+                                     redis_pwd,
+                                     logs,
+                                     train_host_msg,
+                                     train_action_opt_topic_name,
+                                     train_action_result_topic_name,
+                                     train_data_download_topic_name)
+        train_service.run()
+    except KeyboardInterrupt:
+        print("中断服务,终止进程.")
+        export_proc.terminate()
+        export_proc.join(5)
 
 
 if __name__ == '__main__':
