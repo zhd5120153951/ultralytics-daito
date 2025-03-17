@@ -198,12 +198,6 @@ class trainService(BaseService):
         '''
         pass
 
-    def upload_train_info(self):
-        '''
-        上传训练中间过程:比如当前epoch/loss/percise/recall等内容
-        '''
-        pass
-
     def start_train_task(self, taskId, taskName, netType, trainType, modelId, modelType, parameters, labels, log):
         pass
 
@@ -211,8 +205,8 @@ class trainService(BaseService):
         # 每个任务进程的唯一标识
         process_key = f"{taskId}_{taskName}"
         # 设置训练状态--0空闲中,-1--训练出错,1--训练中
-        self.rds.hset(f'{process_key}_status_info', mapping={
-            'status': 0})
+        self.rds.hset(f'{process_key}_train_status_info', mapping={
+            "status": 0, "context": "空闲中"})
         # 查到有同名任务--重复启动--记录日志后直接退出
         if self.get_proc(process_key):
             repeat_train_log = Logger(
@@ -411,9 +405,27 @@ class exportService(BaseService):
         self.export_host_msg = export_host_msg
         self.export_action_opt_topic_name = export_action_opt_topic_name
         self.export_action_result_topic_name = export_action_result_topic_name
-        self.export_tasks = {}
+        self.export_tasks = {}  # 和训练不同,这里value不是进程对象
+
+    def add_task(self, process_key: str, process: mp.Process):
+        """_summary_
+        添加任务
+        """
+        self.active_procs[process_key] = process
+
+    def remove_task(self, process_key: str):
+        """_summary_
+        移除任务
+        """
+        del self.active_procs[process_key]
 
     def get_task(self, task_key: str):
+        """sumary_line
+
+        Keyword arguments:
+        argument -- description
+        Return: return_description
+        """
         return self.export_tasks.get(task_key, None)
 
     def get_task_message(self, export_task_action_opt_msg: dict):
@@ -447,7 +459,7 @@ class exportService(BaseService):
         """
         # 每个任务进程的唯一标识
         process_key = f"{taskId}_{taskName}"
-        if self.export_tasks.get_task(process_key):
+        if not self.get_task(process_key):  # 没有当前重复的导出任务
             repeat_export_log = Logger(
                 f'{self.logs}/repeat_export_log_{process_key}.txt', level='info')
             create_time = datetime.datetime.now().strftime(
@@ -486,15 +498,12 @@ class exportService(BaseService):
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
             self.upload_task_result(
                 'start', taskId, taskName, 0, f'导出任务:{process_key}启动失败', create_time)
-            # 设置导出状态为失败
-            try:
-                self.rds.hset(f'{process_key}_export_status_info', mapping={
-                              'status': -1, 'context': '导出进程启动失败'})
-            except Exception as redis_ex:
-                start_export_log.logger.error(f"更新导出状态失败: {redis_ex}")
             return  # 导出失败,直接返回,不上传导出结果
 
     def stop_export_process(self, taskId, taskName):
+        """
+        导出耗时短，暂不考虑停止
+        """
         process_key = f"{taskId}_{taskName}"
         stop_export_log = Logger(
             f'{self.logs}/stop_export_log_{process_key}.txt', level='info')
@@ -555,7 +564,7 @@ class exportService(BaseService):
                     elif availableGPUId == '-1':
                         export_action_opt_log.logger.error(
                             f'导出任务:{taskName}启动时检测到GPU资源不足,导出任务无法正常启动！')
-                    else:
+                    else:  # 导出耗时比较短,每个任务同步实现
                         self.start_export_process(
                             taskId,
                             taskName,

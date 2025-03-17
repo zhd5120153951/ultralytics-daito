@@ -10,8 +10,10 @@
 @Email      :2462491568@qq.com
 '''
 import os
+import json
 import shutil
 import time
+import datetime
 import asyncio
 from minio.error import S3Error
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +24,9 @@ from config import (data_cfg,
                     train_result,
                     export_result,
                     support_net_type,
-                    support_export_type)
+                    support_export_type,
+                    train_result_topic_name,
+                    export_result_topic_name)
 
 
 class TrainTask:
@@ -65,7 +69,7 @@ class TrainTask:
         """
         try:
             self.rds.hset(f'{self.process_key}_train_status_info', mapping={
-                'status': 1, "context": "训练中"})
+                "status": 1, "context": "训练中"})
             train_params = {
                 "data": f"{data_cfg}/{self.process_key}.yaml",
                 "project": train_result,
@@ -114,13 +118,41 @@ class TrainTask:
             if not os.path.exists(model_trained_path):
                 raise FileNotFoundError(f"训练完成后找不到模型文件:{model_trained_path}")
             shutil.copy(model_trained_path, model_rename_path)
-            self.log.logger.info(
-                f"训练任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s")
+            success_msg = f"训练任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s"
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
+            task_result = {
+                "result": "train_success",
+                "taskId": self.task_id,
+                "taskName": self.task_name,
+                "exeMsg": success_msg,
+                "exeTime": create_time
+            }
+            if hasattr(self, "rds"):
+                self.rds.xadd(train_result_topic_name, {
+                    "result": json.dumps(task_result).encode()}, maxlen=100)
+            self.log.logger.info(success_msg)
+            # 训练完成,马上删除状态流,开始上传minio
             self.rds.hdel(f"{self.process_key}_train_status_info",
                           ("status", "context"))
         except Exception as ex:
-            error_msg = f"训练任务:{self.process_key}执行过程中发生异常:{ex}"
+            error_msg = f"训练任务:{self.process_key}失败,异常信息:{ex}"
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
+            task_result = {
+                "result": "train_error",
+                "taskId": self.task_id,
+                "taskName": self.task_name,
+                "exeMsg": error_msg,
+                "exeTime": create_time
+            }
+            if hasattr(self, "rds"):
+                self.rds.xadd(train_result_topic_name, {
+                    "result": json.dumps(task_result).encode()}, maxlen=100)
             self.log.logger.error(error_msg)
+            # 训练失败,也要删除,并且还是上传(文件不全),但可以辅助查看训练失败的原因
+            self.rds.hdel(
+                f"{self.process_key}_train_status_info", ("status", "context"))
 
     def stop_train_task(self):
         """_summary_
@@ -204,7 +236,7 @@ class ExportTask:
         # 启动任务
         try:
             model_path = f"{export_result}/{self.model_id}.pt"
-            imgsz = [640, 640]  # 这里导出模型输入尺寸可以由web给出
+            imgsz = [640, 640]  # 这里导出模型输入尺寸可以由web给出,通用的是640,其他的1280
             # 检查模型文件是否存在
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"找不到要导出的模型文件:{model_path}")
@@ -218,49 +250,49 @@ class ExportTask:
                              opset=12,
                              device="0")
                 # 上传导出结果
-                try:
-                    self.log.logger.info(f"开始上传导出结果到MinIO.")
-                    asyncio.run(self.upload_all_files())
-                    self.log.logger.info(
-                        f"导出任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s")
-                    self.log.logger.info(f"导出结果上传完成.")
-                    return True
-                except Exception as ex:
-                    self.log.logger.error(f"上传导出结果失败:{ex}")
-                    return False
-            else:
-                error_msg = f"不支持的导出类型:{self.export_type},目前支持的导出类型有:{support_export_type}"
-                self.log.logger.error(error_msg)
-                raise "不支持的到处类型."
-        except Exception as ex:
-            error_msg = f"导出任务:{self.process_key}执行过程中发生异常:{ex}"
-            self.log.logger.error(error_msg)
-            # 上传失败信息到结果消息流
-            try:
-                import datetime
-                import json
+                asyncio.run(self.upload_all_files())
+                success_msg = f"导出上传任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s"
+                self.log.logger.info(success_msg)
                 create_time = datetime.datetime.now().strftime(
                     '%Y-%m-%d %H:%M:%S.%f')[:-3]
                 task_result = {
-                    "action": "export_error",
+                    "result": "export_success",
                     "taskId": self.task_id,
                     "taskName": self.task_name,
-                    "exeResult": 0,
-                    "exeMsg": error_msg,
+                    "exeMsg": success_msg,
                     "exeTime": create_time
                 }
-                from config import export_action_result_topic_name
-                if hasattr(self, 'rds') and self.rds:
-                    self.rds.xadd(export_action_result_topic_name, {
-                                  'result': json.dumps(task_result).encode()}, maxlen=100)
-            except Exception as result_ex:
-                self.log.logger.error(f"上传导出失败结果时发生异常:{result_ex}")
+                if hasattr(self, "rds"):
+                    self.rds.xadd(export_result_topic_name, {
+                                  "result": json.dumps(task_result).encode()}, maxlen=100)
+                return True
+
+            else:
+                error_msg = f"不支持的导出类型:{self.export_type},目前支持的导出类型有:{support_export_type}"
+                self.log.logger.error(error_msg)
+                raise "不支持的导出类型..."
+        except Exception as ex:
+            error_msg = f"导出上传任务:{self.process_key}失败,异常信息:{ex}"
+            self.log.logger.error(error_msg)
+            # 上传失败信息到结果消息流
+            create_time = datetime.datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S.%f')[:-3]
+            task_result = {
+                "result": "export_error",
+                "taskId": self.task_id,
+                "taskName": self.task_name,
+                "exeMsg": error_msg,
+                "exeTime": create_time
+            }
+            if hasattr(self, 'rds'):
+                self.rds.xadd(export_result_topic_name, {
+                    'result': json.dumps(task_result).encode()}, maxlen=100)
             # 确保进程能够正常退出
             return False
 
     def stop_export_task(self):
         """_summary_
-        停止导出任务
+        停止导出任务--单进程且导出时长很短,此功能暂时不添加
         """
         pass
 

@@ -43,7 +43,7 @@ def main():
         if not os.path.exists(dir):
             os.makedirs(dir, exist_ok=True)
 
-    # 启动导出任务进程z
+    # 启动导出任务进程
     try:
         export_service = exportService(redis_ip,
                                        redis_port,
@@ -53,7 +53,6 @@ def main():
                                        export_action_opt_topic_name,
                                        export_action_result_topic_name)
         export_proc = multiprocessing.Process(target=export_service.run)
-        # export_proc.daemon = True
         export_proc.start()
         # 启动训练任务进程
         train_service = trainService(redis_ip,
