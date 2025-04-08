@@ -78,7 +78,7 @@ For detailed instructions and best practices related to the installation process
 
 ### Usage
 
-Before diving into the usage instructions, it's important to note that while all [Ultralytics YOLO11 models](../models/yolo11.md) are available for exporting, you can ensure that the model you select supports export functionality [here](../modes/export.md).
+All [Ultralytics YOLO11 models](../models/yolo11.md) support export, and you can [browse the full list of export formats and options](../modes/export.md) to find the best fit for your deployment needs.
 
 !!! example "Usage"
 
@@ -104,7 +104,7 @@ Before diving into the usage instructions, it's important to note that while all
 
         ```bash
         # Export a YOLO11n PyTorch model to PaddlePaddle format
-        yolo export model=yolo11n.pt format=paddle  # creates '/yolo11n_paddle_model'
+        yolo export model=yolo11n.pt format=paddle # creates '/yolo11n_paddle_model'
 
         # Run inference with the exported model
         yolo predict model='./yolo11n_paddle_model' source='https://ultralytics.com/images/bus.jpg'
@@ -170,7 +170,7 @@ Exporting Ultralytics YOLO11 models to PaddlePaddle format is straightforward. Y
 
         ```bash
         # Export a YOLO11n PyTorch model to PaddlePaddle format
-        yolo export model=yolo11n.pt format=paddle  # creates '/yolo11n_paddle_model'
+        yolo export model=yolo11n.pt format=paddle # creates '/yolo11n_paddle_model'
 
         # Run inference with the exported model
         yolo predict model='./yolo11n_paddle_model' source='https://ultralytics.com/images/bus.jpg'
@@ -187,7 +187,7 @@ PaddlePaddle offers several key advantages for model deployment:
 - **Operator Fusion**: By merging compatible operations, it reduces computational overhead.
 - **Quantization Techniques**: Supports both post-training and quantization-aware training, enabling lower-[precision](https://www.ultralytics.com/glossary/precision) data representations for improved performance.
 
-You can achieve enhanced results by exporting your Ultralytics YOLO11 models to PaddlePaddle, ensuring flexibility and high performance across various applications and hardware platforms. Learn more about PaddlePaddle's features [here](https://www.paddlepaddle.org.cn/en).
+You can achieve enhanced results by exporting your Ultralytics YOLO11 models to PaddlePaddle, ensuring flexibility and high performance across various applications and hardware platforms. Explore PaddlePaddle's key features and capabilities in the [official PaddlePaddle documentation](https://www.paddlepaddle.org.cn/en)..
 
 ### Why should I choose PaddlePaddle for deploying my YOLO11 models?
 
