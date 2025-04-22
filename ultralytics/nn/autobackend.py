@@ -143,12 +143,12 @@ class AutoBackend(nn.Module):
         ) = self._model_type(w)
         fp16 &= pt or jit or onnx or xml or engine or nn_module or triton  # FP16
         nhwc = coreml or saved_model or pb or tflite or edgetpu or rknn  # BHWC formats (vs torch BCWH)
-        stride = 32  # default stride
+        stride, ch = 32, 3  # default stride and channels
         end2end, dynamic = False, False
         model, metadata, task = None, None, None
 
         # Set device
-        cuda = torch.cuda.is_available() and device.type != "cpu"  # use CUDA
+        cuda = isinstance(device, torch.device) and torch.cuda.is_available() and device.type != "cpu"  # use CUDA
         if cuda and not any([nn_module, pt, jit, engine, onnx, paddle]):  # GPU dataloader formats
             device = torch.device("cpu")
             cuda = False
@@ -167,6 +167,7 @@ class AutoBackend(nn.Module):
             stride = max(int(model.stride.max()), 32)  # model stride
             names = model.module.names if hasattr(model, "module") else model.names  # get class names
             model.half() if fp16 else model.float()
+            ch = model.yaml.get("channels", 3)
             self.model = model  # explicitly assign for to(), cpu(), cuda(), half()
             pt = True
 
@@ -182,6 +183,7 @@ class AutoBackend(nn.Module):
             stride = max(int(model.stride.max()), 32)  # model stride
             names = model.module.names if hasattr(model, "module") else model.names  # get class names
             model.half() if fp16 else model.float()
+            ch = model.yaml.get("channels", 3)
             self.model = model  # explicitly assign for to(), cpu(), cuda(), half()
 
         # TorchScript
@@ -215,7 +217,7 @@ class AutoBackend(nn.Module):
                 if "CUDAExecutionProvider" in onnxruntime.get_available_providers():
                     providers.insert(0, "CUDAExecutionProvider")
                 else:  # Only log warning if CUDA was requested but unavailable
-                    LOGGER.warning("WARNING ⚠️ Failed to start ONNX Runtime with CUDA. Using CPU...")
+                    LOGGER.warning("Failed to start ONNX Runtime with CUDA. Using CPU...")
                     device = torch.device("cpu")
                     cuda = False
             LOGGER.info(f"Using ONNX Runtime {providers[0]}")
@@ -262,6 +264,13 @@ class AutoBackend(nn.Module):
             import openvino as ov
 
             core = ov.Core()
+            device_name = "AUTO"
+            if isinstance(device, str) and device.startswith("intel"):
+                device_name = device.split(":")[1].upper()  # Intel OpenVINO device
+                device = torch.device("cpu")
+                if device_name not in core.available_devices:
+                    LOGGER.warning(f"OpenVINO device '{device_name}' not available. Using 'AUTO' instead.")
+                    device_name = "AUTO"
             w = Path(w)
             if not w.is_file():  # if not *.xml
                 w = next(w.glob("*.xml"))  # get *.xml file from *_openvino_model dir
@@ -274,7 +283,7 @@ class AutoBackend(nn.Module):
             LOGGER.info(f"Using OpenVINO {inference_mode} mode for batch={batch} inference...")
             ov_compiled_model = core.compile_model(
                 ov_model,
-                device_name="AUTO",  # AUTO selects best available device, do not modify
+                device_name=device_name,
                 config={"PERFORMANCE_HINT": inference_mode},
             )
             input_name = ov_compiled_model.input().get_any_name()
@@ -316,7 +325,7 @@ class AutoBackend(nn.Module):
             try:
                 context = model.create_execution_context()
             except Exception as e:  # model is None
-                LOGGER.error(f"ERROR: TensorRT model exported with a different version than {trt.__version__}\n")
+                LOGGER.error(f"TensorRT model exported with a different version than {trt.__version__}\n")
                 raise e
 
             bindings = OrderedDict()
@@ -541,8 +550,9 @@ class AutoBackend(nn.Module):
             kpt_shape = metadata.get("kpt_shape")
             end2end = metadata.get("args", {}).get("nms", False)
             dynamic = metadata.get("args", {}).get("dynamic", dynamic)
+            ch = metadata.get("channels", 3)
         elif not (pt or triton or nn_module):
-            LOGGER.warning(f"WARNING ⚠️ Metadata not found for 'model={weights}'")
+            LOGGER.warning(f"Metadata not found for 'model={weights}'")
 
         # Check names
         if "names" not in locals():  # names missing
