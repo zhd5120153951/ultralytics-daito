@@ -159,7 +159,7 @@ class BaseValidator:
         else:
             if str(self.args.model).endswith(".yaml") and model is None:
                 LOGGER.warning(
-                    "WARNING ⚠️ validating an untrained model YAML will result in 0 mAP.")
+                    "validating an untrained model YAML will result in 0 mAP.")
             callbacks.add_integration_callbacks(self)
             model = AutoBackend(
                 weights=model or self.args.model,
@@ -175,7 +175,7 @@ class BaseValidator:
             imgsz = check_imgsz(self.args.imgsz, stride=stride)
             if engine:
                 self.args.batch = model.batch_size
-            elif not pt and not jit:
+            elif not (pt or jit or getattr(model, "dynamic", False)):
                 # export.py models default to batch-size 1
                 self.args.batch = model.metadata.get("batch", 1)
                 LOGGER.info(
@@ -192,7 +192,7 @@ class BaseValidator:
 
             if self.device.type in {"cpu", "mps"}:
                 self.args.workers = 0  # faster CPU val as time dominated by inference, not dataloading
-            if not pt:
+            if not (pt or getattr(model, "dynamic", False)):
                 self.args.rect = False
             self.stride = model.stride  # used in get_dataloader() for padding
             self.dataloader = self.dataloader or self.get_dataloader(
@@ -200,7 +200,7 @@ class BaseValidator:
 
             model.eval()
             model.warmup(imgsz=(1 if pt else self.args.batch,
-                         3, imgsz, imgsz))  # warmup
+                         self.data["channels"], imgsz, imgsz))  # warmup
 
         self.run_callbacks("on_val_start")
         dt = (
