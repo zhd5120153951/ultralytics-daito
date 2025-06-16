@@ -182,3 +182,5 @@ export_results/
 log/
 logs/
 datasets/
+/jupyter
+/.Trash-0
