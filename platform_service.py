@@ -19,11 +19,8 @@ from config import (redis_ip,
                     pretrained_models,
                     train_result,
                     export_result,
-                    train_host_msg,
                     train_action_opt_topic_name,
                     train_action_result_topic_name,
-                    train_data_download_topic_name,
-                    export_host_msg,
                     export_action_opt_topic_name,
                     export_action_result_topic_name)
 
@@ -49,7 +46,6 @@ def main():
                                        redis_port,
                                        redis_pwd,
                                        logs,
-                                       export_host_msg,
                                        export_action_opt_topic_name,
                                        export_action_result_topic_name)
         export_proc = multiprocessing.Process(target=export_service.run)
@@ -59,10 +55,8 @@ def main():
                                      redis_port,
                                      redis_pwd,
                                      logs,
-                                     train_host_msg,
                                      train_action_opt_topic_name,
-                                     train_action_result_topic_name,
-                                     train_data_download_topic_name)
+                                     train_action_result_topic_name)
         train_service.run()
     except KeyboardInterrupt:
         print("中断服务,终止进程.")

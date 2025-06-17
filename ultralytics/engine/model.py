@@ -332,7 +332,8 @@ class Model(torch.nn.Module):
             >>> model = Model("yolo11n.onnx")
             >>> model._check_is_pytorch_model()  # Raises TypeError
         """
-        pt_str = isinstance(self.model, (str, Path)) and str(self.model).rpartition(".")[-1] == "pt"
+        pt_str = isinstance(self.model, (str, Path)) and str(
+            self.model).rpartition(".")[-1] == "pt"
         pt_module = isinstance(self.model, torch.nn.Module)
         if not (pt_module or pt_str):
             raise TypeError(
@@ -369,7 +370,7 @@ class Model(torch.nn.Module):
             p.requires_grad = True
         return self
 
-    def load(self, rds=None, task_id=None, task_name=None, weights: Union[str, Path] = "yolo11n.pt") -> "Model":
+    def load(self, rds=None, task_id=None, weights: Union[str, Path] = "yolo11n.pt") -> "Model":
         """
         Load parameters from the specified weights file into the model.
 
@@ -392,7 +393,6 @@ class Model(torch.nn.Module):
         """
         self.rds = rds
         self.task_id = task_id
-        self.task_name = task_name
         self._check_is_pytorch_model()
         if isinstance(weights, (str, Path)):
             # remember the weights for DDP training
@@ -696,9 +696,11 @@ class Model(torch.nn.Module):
         from .exporter import export_formats
 
         custom = {"verbose": False}  # method defaults
-        args = {**DEFAULT_CFG_DICT, **self.model.args, **custom, **kwargs, "mode": "benchmark"}
+        args = {**DEFAULT_CFG_DICT, **self.model.args,
+                **custom, **kwargs, "mode": "benchmark"}
         fmts = export_formats()
-        export_args = set(dict(zip(fmts["Argument"], fmts["Arguments"])).get(format, [])) - {"batch"}
+        export_args = set(
+            dict(zip(fmts["Argument"], fmts["Arguments"])).get(format, [])) - {"batch"}
         export_kwargs = {k: v for k, v in args.items() if k in export_args}
         return benchmark(
             model=self,
@@ -817,9 +819,10 @@ class Model(torch.nn.Module):
         args = {**overrides, **custom, **kwargs, "mode": "train"}
         if args.get("resume"):
             args["resume"] = self.ckpt_path
-        # zhd 获取到DetectionTrainer,然后构造一个trainer,其中DetectionTrainer继承BaseTrainer,然后调用trainer.train()
+        # zhd 获取到DetectionTrainer,然后构造一个trainer,其中DetectionTrainer继承BaseTrainer,
+        # 然后调用trainer.train()
         self.trainer = (trainer or self._smart_load("trainer"))(
-            self.rds, self.task_id, self.task_name, overrides=args, _callbacks=self.callbacks)
+            self.rds, self.task_id, overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
             self.trainer.model = self.trainer.get_model(
                 weights=self.model if self.ckpt else None, cfg=self.model.yaml)

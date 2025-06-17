@@ -16,7 +16,7 @@ import time
 import datetime
 import json
 import multiprocessing as mp
-from utils import Logger, Dataset, uploadMinio
+from utils import Logger, Dataset, uploadMinio, TrainStatusType
 from services.task import TrainTask, ExportTask
 from config import (IP, minio_endpoint,
                     minio_access_key,
@@ -93,19 +93,15 @@ class trainService(BaseService):
                  redis_port,
                  redis_pwd,
                  logs,
-                 train_host_msg,
                  train_action_opt_topic_name,
-                 train_action_result_topic_name,
-                 train_data_download_topic_name):
+                 train_action_result_topic_name):
         super().__init__(redis_ip,
                          redis_port,
                          redis_pwd,
                          logs)
         # ... 子类的初始化代码 ...
-        self.train_host_msg = train_host_msg
         self.train_action_opt_topic_name = train_action_opt_topic_name
         self.train_action_result_topic_name = train_action_result_topic_name
-        self.train_data_download_topic_name = train_data_download_topic_name
         self.active_procs = {}
 
     def add_proc(self, process_key: str, process: mp.Process):
@@ -155,42 +151,27 @@ class trainService(BaseService):
 
     def get_task_message(self, train_task_action_opt_msg: dict):
         action = train_task_action_opt_msg['action']
-        taskId = train_task_action_opt_msg['taskId']
-        taskName = train_task_action_opt_msg['taskName']
+        taskId = train_task_action_opt_msg['taskId']  # 做为唯一进程名
         modelId = train_task_action_opt_msg['modelId']
         netType = train_task_action_opt_msg['netType']
         modelType = train_task_action_opt_msg['modelType']
-        prefix = train_task_action_opt_msg['prefix']  # list
+        prefix = train_task_action_opt_msg['datasets']  # list
         labels = train_task_action_opt_msg['labels']  # list
         ratio = train_task_action_opt_msg['ratio']
         train_params = train_task_action_opt_msg['train_params']
-        return (action, taskId, taskName, modelId, netType, modelType, prefix, labels, ratio, train_params)
+        return (action, taskId, modelId, netType, modelType, prefix, labels, ratio, train_params)
 
-    def upload_data_download_result(self, downlaod_finish):
+    def upload_train_result(self, taskId: str, status: TrainStatusType, message: str):
         '''
         具体上传怎么内容需要和平台协定
         '''
-        message_id = self.rds.xadd(self.train_data_download_topic_name,
-                                   {'result': str({'ret': downlaod_finish}).encode()}, maxlen=100)
-        # log.logger.info(f'data_downkload_result: {data_download_result}')
-
-    def upload_task_result(self, action, taskId, taskName, exeResult, exeMsg, create_time):
-        '''
-        上传任务启动结果:
-        1.当前任务启动:启动失败-启动重复->0 or 启动成功->1
-        2.当前任务停止:停止失败-停止重复->0 or 停止成功->1
-        '''
-        task_result = {
-            "action": action,
+        data = {
             "taskId": taskId,
-            "taskName": taskName,
-            "exeResult": exeResult,
-            "exeMsg": exeMsg,
-            "exeTime": create_time
+            "status": status,
+            "message": message
         }
-        message_id = self.rds.xadd(self.train_action_result_topic_name, {
-                                   'result': str(task_result).encode()}, maxlen=100)
-        # log.logger.info(f'task_result:{task_result}')
+        message_id = self.rds.xadd(self.train_action_result_topic_name,
+                                   {'trainResult': json.dumps(data).encode()}, maxlen=100)
 
     def upload_train_result_minio(self, action, taskId, taskName, create_time):
         '''
@@ -201,54 +182,48 @@ class trainService(BaseService):
     def start_train_task(self, taskId, taskName, netType, trainType, modelId, modelType, parameters, labels, log):
         pass
 
-    def start_train_process(self, taskId: str, taskName: str, modelId: str, netType: str, modelType: str, prefix: list, labels: list, ratio: float, parameters: dict):
-        # 每个任务进程的唯一标识
-        process_key = f"{taskId}_{taskName}"
+    def start_train_process(self, taskId: str, modelId: str, netType: str, modelType: str, datasets: list, labels: list, ratio: float, parameters: dict):
+        """sumary_line
+        taskId:每个任务进程的唯一标识
+        """
         # 设置训练状态--0空闲中,-1--训练出错,1--训练中
-        self.rds.hset(f'{process_key}_train_status_info', mapping={
+        self.rds.hset(f'{taskId}_train_status_info', mapping={
             "status": 0, "context": "空闲中"})
         # 查到有同名任务--重复启动--记录日志后直接退出
-        if self.get_proc(process_key):
+        if self.get_proc(taskId):
             repeat_train_log = Logger(
-                f'{self.logs}/repeat_train_log_{process_key}.txt', level='info')
-            create_time = datetime.datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S.%f')[:-3]
-            self.upload_task_result(
-                "start",
-                taskId,
-                taskName,
-                0,
-                f"训练任务:{process_key}已经启动运行中,无需重复启动！",
-                create_time)
-            repeat_train_log.logger.info(f"训练任务:{process_key}已经启动运行中,无需重复启动！")
+                f'{self.logs}/repeat_train_log_{taskId}.txt', level='info')
+            repeat_train_log.logger.info(f"训练任务:{taskId}已经启动运行中,无需重复启动！")
             return
         # 正常启动训练--数据集下载、模型训练、结果上传(异步)
         # 1.数据集并发下载
         downlaod_datasets_log = Logger(
-            f"{self.logs}/download_datasets_log_{process_key}.txt", level="info")
-        data_yaml_path = f"{data_cfg}/{process_key}.yaml"
+            f"{self.logs}/download_datasets_log_{taskId}.txt", level="info")
+        data_yaml_path = f"{data_cfg}/{taskId}.yaml"
         if not modelId:  # 初始化训练
             trainType = "Init"
         else:  # 迭代训练
             trainType = "iteration"
         dataset = Dataset(self.minio_client,
-                          "datasets",
+                          "datasets",  # minio固定的数据集存放目录名
                           "train",
-                          prefix,
+                          datasets,  # minio上数据集目录下的若干数据集名
                           labels,
                           ratio,
                           data_yaml_path,
                           downlaod_datasets_log)
         dataset.start()
         dataset.join()  # 这里阻塞,等待数据集的操作全部完成才能训练
-        self.upload_data_download_result(True)
+        if not dataset.isFinished:
+            self.upload_train_result(
+                taskId, TrainStatusType.FAILED, "数据集下载失败")
+            return
         # 2.异步训练--classify,detect,obb,segment,pose
         start_train_log = Logger(
-            f"{self.logs}/start_train_log_{process_key}.txt", level="info")
+            f"{self.logs}/start_train_log_{taskId}.txt", level="info")
         train_task = TrainTask(
             self.rds,
             taskId,
-            taskName,
             netType,
             trainType,
             modelId,
@@ -260,57 +235,53 @@ class trainService(BaseService):
         p_task.daemon = True
         p_task.start()
         if p_task.is_alive():
-            self.add_proc(process_key, p_task)  # 保存当前任务对应的进程
+            self.add_proc(taskId, p_task)  # 保存当前任务对应的进程:taskId:一个训练进程
             create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
-            self.upload_task_result(
-                "start", taskId, taskName, 1, f"训练任务:{process_key}启动成功", create_time)
+            start_train_log.logger.info(
+                f"训练任务:{taskId}启动成功,进程id:{p_task.pid},时间:{create_time}")
         else:
             create_time = datetime.datetime.now().strftime(
                 '%Y-%m-%d %H:%M:%S.%f')[:-3]
-            self.upload_task_result(
-                "start", taskId, taskName, 0, f"训练任务:{process_key}启动失败", create_time)
+            start_train_log.logger.info(
+                f"训练任务:{taskId}启动失败,时间:{create_time}")
+            self.upload_train_result(
+                taskId, TrainStatusType.FAILED, "训练任务进程启动失败")
             return
         # 3.上传minio
         upload_train_result_log = Logger(
-            f'{self.logs}/upload_train_result_log_{process_key}.txt', level='info')
+            f'{self.logs}/upload_train_result_log_{taskId}.txt', level='info')
         upload_minio = uploadMinio(self.rds,
                                    self.minio_client,
                                    'train',
                                    train_result,
                                    taskId,
-                                   taskName,
                                    minio_train_prefix,
                                    'train',
-                                   # modelId是导出上次的模型名字(taskId_taskName),对于训练时,此参数可任意给
+                                   # modelId是导出上次的模型名字(taskId),对于训练时,此参数可任意给
                                    "",
                                    upload_train_result_log,
                                    max_workers)
         upload_minio.start()
+        if not upload_minio.isFinished:
+            self.upload_train_result(
+                taskId, TrainStatusType.FAILED, "训练结果上传Minio失败")
 
-    def stop_train_process(self, taskId, taskName):
-        process_key = f"{taskId}_{taskName}"
+    def stop_train_process(self, taskId: str):
+        """sumary_line
+            taskId:做为每个训练进城的唯一key
+        """
+
         stop_train_log = Logger(
-            f'{self.logs}/stop_train_log_{process_key}.txt', level='info')
-        if not self.stop_proc(process_key):
-            create_time = datetime.datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S.%f')[:-3]
-            self.upload_task_result(
-                "stop",
-                taskId,
-                taskName,
-                0,
-                f"训练任务{process_key}不存在或已经停止运行！", create_time)
-            stop_train_log.logger.info(f"训练任务{process_key}已正常训练完成,后台进程已正常退出！")
+            f'{self.logs}/stop_train_log_{taskId}.txt', level='info')
+        if not self.stop_proc(taskId):
+            stop_train_log.logger.info(f"训练任务{taskId}已正常训练完成,后台进程已正常退出！")
         else:  # 非空--该任务还在训练中--需要终止
             # 同时训练的状态流也该删除
-            self.rds.hdel(f"{process_key}_train_status_info",
-                          ("status", "context"))
-            create_time = datetime.datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S.%f')[:-3]
-            self.upload_task_result(
-                "stop", taskId, taskName, 1, f"训练任务{process_key}停止成功", create_time)
-            stop_train_log.logger.info(f"已正常停止正在训练中的任务:{process_key}！")
+            self.rds.hdel(f"{taskId}_train_status_info", ("status", "context"))
+            self.upload_train_result(
+                taskId, TrainStatusType.KILLED, "训练任务被手动终止")
+            stop_train_log.logger.info(f"已正常停止正在训练中的任务:{taskId}！")
 
     def run(self):
         # 消费平台下发的训练任务消息
@@ -350,11 +321,11 @@ class trainService(BaseService):
                 opt_msg = message_data[b"action"].decode()
                 train_action_opt_log.logger.info(f'Redis消息内容:{opt_msg}')
                 train_task_action_opt_msg = json.loads(opt_msg)
-                if train_task_action_opt_msg['IP'] != IP:
+                if train_task_action_opt_msg['ip'] != IP:
                     continue
                 self.rds.xdel(self.train_action_opt_topic_name, message_id)
                 # 解析训练任务消息
-                action, taskId, taskName, modelId, netType, modelType, prefix, labels, ratio, parameters = self.get_task_message(
+                action, taskId, modelId, netType, modelType, datasets, labels, ratio, parameters = self.get_task_message(
                     train_task_action_opt_msg)
                 # 启用模型训练
                 if action == 'start':
@@ -363,27 +334,26 @@ class trainService(BaseService):
                         train_action_opt_log)
                     if availableGPUId == '-2':
                         train_action_opt_log.logger.info(
-                            f'训练任务:{taskName}启动时未检测到可用的GPU,训练任务无法正常启动！')
+                            f'训练任务:{taskId}启动时未检测到可用的GPU,训练任务无法正常启动！')
                     elif availableGPUId == '-1':
                         train_action_opt_log.logger.error(
-                            f'训练任务:{taskName}启动时检测到GPU资源不足,训练任务无法正常启动！')
+                            f'训练任务:{taskId}启动时检测到GPU资源不足,训练任务无法正常启动！')
                     else:
                         # 用这个可以对应多个训练任务
                         self.start_train_process(
                             taskId,
-                            taskName,
                             modelId,
                             netType,
                             modelType,
-                            prefix,
+                            datasets,
                             labels,
                             ratio,
                             parameters)
                         train_action_opt_log.logger.info(
-                            f'训练任务:{taskName}启动时检测到可用GPU:{availableGPUId}的利用率最低,且利用率:{gpu_unit_use}')
+                            f'训练任务:{taskId}启动时检测到可用GPU:{availableGPUId}的利用率最低,且利用率:{gpu_unit_use}')
                         time.sleep(10)
                 else:  # 停止模型训练--1:训练没结束时停止;2:训练已结束时停止
-                    self.stop_train_process(taskId, taskName)
+                    self.stop_train_process(taskId)
             except Exception as ex:
                 train_action_opt_log.logger.error(f'训练服务启动发生异常!\terr:{ex}')
 
@@ -394,7 +364,6 @@ class exportService(BaseService):
                  redis_port,
                  redis_pwd,
                  logs,
-                 export_host_msg,
                  export_action_opt_topic_name,
                  export_action_result_topic_name):
         super().__init__(redis_ip,
@@ -402,7 +371,6 @@ class exportService(BaseService):
                          redis_pwd,
                          logs)
         # ... 子类初始化代码 ...
-        self.export_host_msg = export_host_msg
         self.export_action_opt_topic_name = export_action_opt_topic_name
         self.export_action_result_topic_name = export_action_result_topic_name
         self.export_tasks = {}  # 和训练不同,这里value不是进程对象

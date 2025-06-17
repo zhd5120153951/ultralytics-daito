@@ -32,7 +32,7 @@ class Dataset(Thread):
     # python类没有真正的私有属性,__Dataset.__ext_name访问
     __ext_name = ('.jpg', '.jpeg', '.png', '.xml')
 
-    def __init__(self, minio: Minio, datasets_dir: str,  bucket: str, prefix: list, labels: list, ratio: float, data_yaml_path: str, log: Logger):
+    def __init__(self, minio: Minio, datasets_dir: str,  bucket: str, datasets: list, labels: list, ratio: float, data_yaml_path: str, log: Logger):
         '''
         初始化线程对象
         params:
@@ -45,10 +45,11 @@ class Dataset(Thread):
             log:日志对象
         '''
         super().__init__()
+        self.isFinished = True  # 数据集是否正常下载转换完成
         self.datasets_dir = datasets_dir
         self.bucket = bucket
-        self.prefix_1 = datasets_dir  # minio第一级
-        self.prefix_2 = prefix
+        self.prefix_1 = datasets_dir  # minio目录名
+        self.prefix_2 = datasets  # minio选中的数据集列表
         self.src_dir = [os.path.join(self.prefix_1, item)
                         for item in self.prefix_2]  # 源目录
         self.labels = labels
@@ -57,7 +58,7 @@ class Dataset(Thread):
         self.log = log
         # [datasets/data1,datasets/data2,...]
         self.dst_dir = [os.path.join(self.datasets_dir, item)
-                        for item in prefix]  # 本地目录
+                        for item in datasets]  # 本地目录
         self.minio_client = minio
         # 数据集没下载完成-处理完成-不允许后台训练进程启动
         self.downlaod_finish = False
@@ -157,6 +158,7 @@ class Dataset(Thread):
                     task.clear()
         except Exception as ex:
             self.log.logger.error(f'数据集{self.prefix_2[idx]}下载出错,错误内容:{ex}')
+            self.isFinished = False
 
     def convert_xml2txt(self, xml_path: str, txt_path: str):
         '''

@@ -21,6 +21,8 @@ import torch
 from torch import distributed as dist
 from torch import nn, optim
 
+from config import train_action_result_topic_name
+from utils import TrainStatusType
 from ultralytics import __version__
 from ultralytics.cfg import get_cfg, get_save_dir
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
@@ -107,7 +109,7 @@ class BaseTrainer:
         >>> trainer.train()
     """
 
-    def __init__(self, rds=None, task_id=None, task_name=None, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
+    def __init__(self, rds=None, task_id=None, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         """
         Initialize the BaseTrainer class.
 
@@ -119,12 +121,12 @@ class BaseTrainer:
         # zhd
         self.rds = rds
         self.task_id = task_id
-        self.task_name = task_name
         self.args = get_cfg(cfg, overrides)
         self.check_resume(overrides)
         self.device = select_device(self.args.device, self.args.batch)
         # Update "-1" devices so post-training val does not repeat search
-        self.args.device = os.getenv("CUDA_VISIBLE_DEVICES") if "cuda" in str(self.device) else str(self.device)
+        self.args.device = os.getenv("CUDA_VISIBLE_DEVICES") if "cuda" in str(
+            self.device) else str(self.device)
         self.validator = None
         self.metrics = None
         self.plots = {}
@@ -157,8 +159,10 @@ class BaseTrainer:
             self.args.workers = 0
 
         # Model and Dataset
-        self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolo11n -> yolo11n.pt
-        with torch_distributed_zero_first(LOCAL_RANK):  # avoid auto-downloading dataset multiple times
+        # add suffix, i.e. yolo11n -> yolo11n.pt
+        self.model = check_model_file_from_stem(self.args.model)
+        # avoid auto-downloading dataset multiple times
+        with torch_distributed_zero_first(LOCAL_RANK):
             self.data = self.get_dataset()
 
         self.ema = None
@@ -519,8 +523,13 @@ class BaseTrainer:
                     "metrics/mAP50": metrics["metrics/mAP50(B)"],
                     "metrics/mAP50-95": metrics["metrics/mAP50-95(B)"]
                 }
-                self.rds.xadd(f"{self.task_id}_{self.task_name}_each_epoch_info", {
-                              "each_epoch_info": str(epoch_result).encode()}, maxlen=100)
+                task_result = {
+                    "taskId": self.task_id,
+                    "status": TrainStatusType.RUNNING,
+                    "message": epoch_result
+                }
+                self.rds.xadd(train_action_result_topic_name, {
+                              "trainResult": str(task_result).encode()}, maxlen=100)
                 self.stop |= self.stopper(
                     epoch + 1, self.fitness) or final_epoch
                 if self.args.time:
@@ -676,7 +685,8 @@ class BaseTrainer:
                     # for validating 'yolo train data=url.zip' usage
                     self.args.data = data["yaml_file"]
         except Exception as e:
-            raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
+            raise RuntimeError(
+                emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
         if self.args.single_cls:
             LOGGER.info("Overriding class names with single class.")
             data["names"] = {0: "item"}
@@ -742,11 +752,13 @@ class BaseTrainer:
 
     def get_validator(self):
         """Return a NotImplementedError when the get_validator function is called."""
-        raise NotImplementedError("get_validator function not implemented in trainer")
+        raise NotImplementedError(
+            "get_validator function not implemented in trainer")
 
     def get_dataloader(self, dataset_path, batch_size=16, rank=0, mode="train"):
         """Return dataloader derived from torch.data.Dataloader."""
-        raise NotImplementedError("get_dataloader function not implemented in trainer")
+        raise NotImplementedError(
+            "get_dataloader function not implemented in trainer")
 
     def build_dataset(self, img_path, mode="train", batch=None):
         """Build dataset."""

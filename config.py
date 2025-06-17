@@ -21,16 +21,14 @@ minio_endpoint = "192.168.1.134:9000"
 minio_access_key = "minioadmin"
 minio_secret_key = "minioadmin"
 # 训练的Redis消息流相关配置
-train_host_msg = "AI_TRAIN_HOST_MSG"  # 暂时没用到
 train_action_opt_topic_name = "AI_TRAIN_TASK_ACTION_OPT"  # 训练任务下发的消息流
 train_action_result_topic_name = "AI_TRAIN_TASK_ACTION_RESULT"  # 训练任务返回的消息流
-train_data_download_topic_name = "AI_TRAIN_DATA_DOWNLOAD_RESULT"  # 训练数据下载的消息流
-train_result_topic_name = "AI_TRAIN_TASK_RESULT"  # 训练任务的完成情况消息流
+# train_data_download_topic_name = "AI_TRAIN_DATA_DOWNLOAD_RESULT"  # 训练数据下载的消息流
+# train_result_topic_name = "AI_TRAIN_TASK_RESULT"  # 训练任务的完成情况消息流
 # 导出的Redis消息流相关配置
-export_host_msg = "AI_EXPORT_HOST_MSG"
 export_action_opt_topic_name = "AI_EXPORT_TASK_ACTION_OPT"  # 导出任务下发的消息流
 export_action_result_topic_name = "AI_EXPORT_TASK_ACTION_RESULT"  # 导出任务返回的消息流
-export_result_topic_name = "AI_EXPORT_TASK_RESULT"  # 导出任务结果的消息流
+# export_result_topic_name = "AI_EXPORT_TASK_RESULT"  # 导出任务结果的消息流
 # 支持训练的网络类型
 support_net_type = [
     # "yolov3",#性能太差
@@ -49,11 +47,11 @@ data_cfg = "data_cfg"
 pretrained_models = "pretrained_models"
 # 训练结果目录
 train_result = "train_results"
+# 导出结果目录
+export_result = "export_results"
 # 上传minio的prefix
 minio_train_prefix = "train_result_package"
 minio_export_prefix = "export_result_package"
-# 导出结果目录
-export_result = "export_results"
 # 日志保存目录
 logs = "logs"
 # 异步上传文件的线程池最大工作线程数

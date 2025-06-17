@@ -18,15 +18,15 @@ import asyncio
 from minio.error import S3Error
 from concurrent.futures import ThreadPoolExecutor
 from ultralytics import YOLO
-from utils import find_pt
+from utils import find_pt, TrainStatusType
 from config import (data_cfg,
                     pretrained_models,
                     train_result,
                     export_result,
                     support_net_type,
                     support_export_type,
-                    train_result_topic_name,
-                    export_result_topic_name)
+                    train_action_result_topic_name,
+                    export_action_result_topic_name)
 
 
 class TrainTask:
@@ -34,10 +34,9 @@ class TrainTask:
     训练任务类:负责单个训练任务的执行和管理
     """
 
-    def __init__(self, rds, task_id, task_name, net_type, train_type, model_id, model_type, parameters, labels, log):
+    def __init__(self, rds, task_id, net_type, train_type, model_id, model_type, parameters, labels, log):
         self.rds = rds
         self.task_id = task_id
-        self.task_name = task_name
         self.net_type = net_type
         self.train_type = train_type
         self.model_id = model_id
@@ -45,7 +44,7 @@ class TrainTask:
         self.parameters = parameters
         self.labels = labels
         self.log = log
-        self.process_key = f"{task_id}_{task_name}"  # 进程名:任务id_任务名称
+        self.process_key = task_id  # 进程名:任务id
 
     def regnix_format(self):
         re_list = []
@@ -67,6 +66,7 @@ class TrainTask:
         """_summary_
         启动训练任务
         """
+        task_result = {}
         try:
             self.rds.hset(f'{self.process_key}_train_status_info', mapping={
                 "status": 1, "context": "训练中"})
@@ -86,7 +86,7 @@ class TrainTask:
                     else:
                         model_cfg = f"{pretrained_models}/{self.net_type}.yaml"
                         model_path = f"{pretrained_models}/{self.net_type}.pt"
-                else:  # 迭代--modelId是上一次训练的taskId_taskName
+                else:  # 迭代--modelId是上一次训练的taskId
                     iter_pre_model = find_pt(export_result, self.model_id)
                     if not iter_pre_model:
                         raise FileNotFoundError(
@@ -100,14 +100,17 @@ class TrainTask:
             else:
                 error_msg = f"不支持的网络类型:{self.net_type},目前支持的网络类型有:{support_net_type}"
                 self.log.logger.error(error_msg)
+                task_result = {
+                    "taskId": self.task_id,
+                    "status": TrainStatusType.FAILED,
+                    "message": error_msg
+                }
+                self.rds.xadd(train_action_result_topic_name, {
+                    "trainResult": json.dumps(task_result).encode()}, maxlen=100)
                 return
             # 加载模型
             self.log.logger.info(f"开始加载模型:{model_cfg},权重路径:{model_path}")
-            model = YOLO(model_cfg).load(
-                self.rds,
-                self.task_id,
-                self.task_name,
-                model_path)
+            model = YOLO(model_cfg).load(self.rds, self.task_id, model_path)
             # 开始训练
             self.log.logger.info(f"开始训练模型,训练参数:{train_params}")
             start_time = time.time()
@@ -119,40 +122,32 @@ class TrainTask:
                 raise FileNotFoundError(f"训练完成后找不到模型文件:{model_trained_path}")
             shutil.copy(model_trained_path, model_rename_path)
             success_msg = f"训练任务:{self.process_key}完成,耗时:{(time.time()-start_time):.3f}s"
-            create_time = datetime.datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S.%f')[:-3]
             task_result = {
-                "result": "train_success",
                 "taskId": self.task_id,
-                "taskName": self.task_name,
-                "exeMsg": success_msg,
-                "exeTime": create_time
+                "status": TrainStatusType.SUCCESS,
+                "message": success_msg
             }
             if hasattr(self, "rds"):
-                self.rds.xadd(train_result_topic_name, {
-                    "result": json.dumps(task_result).encode()}, maxlen=100)
+                self.rds.xadd(train_action_result_topic_name, {
+                    "trainResult": json.dumps(task_result).encode()}, maxlen=100)
             self.log.logger.info(success_msg)
             # 训练完成,马上删除状态流,开始上传minio
-            self.rds.hdel(f"{self.process_key}_train_status_info",
-                          ("status", "context"))
+            self.rds.hdel(
+                f"{self.process_key}_train_status_info", "status", "context")
         except Exception as ex:
             error_msg = f"训练任务:{self.process_key}失败,异常信息:{ex}"
-            create_time = datetime.datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S.%f')[:-3]
             task_result = {
-                "result": "train_error",
                 "taskId": self.task_id,
-                "taskName": self.task_name,
-                "exeMsg": error_msg,
-                "exeTime": create_time
+                "status": TrainStatusType.FAILED,
+                "message": error_msg
             }
             if hasattr(self, "rds"):
-                self.rds.xadd(train_result_topic_name, {
-                    "result": json.dumps(task_result).encode()}, maxlen=100)
+                self.rds.xadd(train_action_result_topic_name, {
+                    "trainResult": json.dumps(task_result).encode()}, maxlen=100)
             self.log.logger.error(error_msg)
             # 训练失败,也要删除,并且还是上传(文件不全),但可以辅助查看训练失败的原因
             self.rds.hdel(
-                f"{self.process_key}_train_status_info", ("status", "context"))
+                f"{self.process_key}_train_status_info", "status", "context")
 
     def stop_train_task(self):
         """_summary_
