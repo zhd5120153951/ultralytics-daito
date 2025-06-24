@@ -12,6 +12,7 @@ import os
 import subprocess
 import time
 import warnings
+import json
 from copy import copy, deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -526,10 +527,10 @@ class BaseTrainer:
                 task_result = {
                     "taskId": self.task_id,
                     "status": TrainStatusType.RUNNING,
-                    "message": epoch_result
+                    "message": json.dumps(epoch_result)
                 }
                 self.rds.xadd(train_action_result_topic_name, {
-                              "trainResult": str(task_result).encode()}, maxlen=100)
+                              "trainResult": json.dumps(task_result).encode()}, maxlen=100)
                 self.stop |= self.stopper(
                     epoch + 1, self.fitness) or final_epoch
                 if self.args.time:

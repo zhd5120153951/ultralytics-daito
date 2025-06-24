@@ -5,15 +5,16 @@
 @Author     :daito
 @Website    :Https://github.com/zhd5120153951
 @Copyright  :daito
-@License    :None
+@License    :LongRuan@copyright
 @version    :1.0
 @Email      :2462491568@qq.com.
 """
 
 # Redis连接相关配置
-redis_ip = "192.168.1.184"
+redis_ip = "192.168.1.134"
 redis_port = 6379
 redis_pwd = ""
+redis_db = 6  # redis数据库索引
 # 训练服务器IP
 IP = "192.168.1.184"
 # 数据集配置
@@ -23,21 +24,18 @@ minio_secret_key = "minioadmin"
 # 训练的Redis消息流相关配置
 train_action_opt_topic_name = "AI_TRAIN_TASK_ACTION_OPT"  # 训练任务下发的消息流
 train_action_result_topic_name = "AI_TRAIN_TASK_ACTION_RESULT"  # 训练任务返回的消息流
-# train_data_download_topic_name = "AI_TRAIN_DATA_DOWNLOAD_RESULT"  # 训练数据下载的消息流
-# train_result_topic_name = "AI_TRAIN_TASK_RESULT"  # 训练任务的完成情况消息流
 # 导出的Redis消息流相关配置
 export_action_opt_topic_name = "AI_EXPORT_TASK_ACTION_OPT"  # 导出任务下发的消息流
 export_action_result_topic_name = "AI_EXPORT_TASK_ACTION_RESULT"  # 导出任务返回的消息流
-# export_result_topic_name = "AI_EXPORT_TASK_RESULT"  # 导出任务结果的消息流
 # 支持训练的网络类型
 support_net_type = [
     # "yolov3",#性能太差
     "yolov5n", "yolov5s", "yolov5m", "yolov5l",
-    "yolov8n", "yolov8s", "yolov8m", "yolovv8l",
+    "yolov8n", "yolov8s", "yolov8m", "yolov8l",
     # "yolov9",#仅有det+seg
-    # "yolov10n", "yolov10s", "yolov10m", "yolov10l",
+    # "yolov10n", "yolov10s", "yolov10m", "yolov10l",#推理不兼容其他版本
     "yolov11n", "yolov11s", "yolov11m", "yolov11l",
-    "ylolov12n", "yolov12s", "yolov12m", "yolov12l"
+    "yolov12n", "yolov12s", "yolov12m", "yolov12l"
 ]
 # 支持导出的模型格式
 support_export_type = ["paddle", "onnx", "torchscript", "tensorrt", "rknn"]
@@ -50,6 +48,8 @@ train_result = "train_results"
 # 导出结果目录
 export_result = "export_results"
 # 上传minio的prefix
+minio_bucket_prefix = "train"
+minio_data_prefix = "datasets"
 minio_train_prefix = "train_result_package"
 minio_export_prefix = "export_result_package"
 # 日志保存目录

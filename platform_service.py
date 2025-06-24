@@ -5,7 +5,7 @@
 @Author     :daito
 @Website    :Https://github.com/zhd5120153951
 @Copyright  :daito
-@License    :None
+@License    :LongRuan@copyright
 @version    :1.0
 @Email      :2462491568@qq.com
 '''
@@ -14,6 +14,7 @@ import multiprocessing
 from config import (redis_ip,
                     redis_port,
                     redis_pwd,
+                    redis_db,
                     data_cfg,
                     logs,
                     pretrained_models,
@@ -45,6 +46,7 @@ def main():
         export_service = exportService(redis_ip,
                                        redis_port,
                                        redis_pwd,
+                                       redis_db,
                                        logs,
                                        export_action_opt_topic_name,
                                        export_action_result_topic_name)
@@ -54,6 +56,7 @@ def main():
         train_service = trainService(redis_ip,
                                      redis_port,
                                      redis_pwd,
+                                     redis_db,
                                      logs,
                                      train_action_opt_topic_name,
                                      train_action_result_topic_name)

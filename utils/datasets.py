@@ -45,7 +45,7 @@ class Dataset(Thread):
             log:日志对象
         '''
         super().__init__()
-        self.isFinished = True  # 数据集是否正常下载转换完成
+        self.isFinished = False  # 数据集是否正常下载转换完成
         self.datasets_dir = datasets_dir
         self.bucket = bucket
         self.prefix_1 = datasets_dir  # minio目录名
@@ -317,3 +317,5 @@ class Dataset(Thread):
         self.process_datasets()
         # 然后生成对应的训练数据准备文件yaml
         self.generate_yaml()
+        # 最后修改数据集下载完成状态
+        self.isFinished = True

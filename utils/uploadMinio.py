@@ -41,7 +41,6 @@ class uploadMinio(Thread):
         :param max_workers:     线程池最大工作线程数
         """
         super().__init__()
-        self.isFinished = True
         self.rds = rds
         self.process_key = taskId
         self.train_task_status_topic_name = f"{self.process_key}_train_status_info"
@@ -120,7 +119,6 @@ class uploadMinio(Thread):
                     asyncio.run(self.upload_all_files())
                 except Exception as ex:
                     self.log.logger.error(f'上传过程发生错误:{ex}')
-                    self.isFinished = False
                 break
             else:
                 time.sleep(3)
