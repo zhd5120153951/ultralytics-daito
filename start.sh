@@ -3,7 +3,7 @@
 set -e
 #启动jupyter
 echo "[startup] Starting Jupyter Notebook in /jupyter ..."
-jupyter notebook --allow-root &
+jupyter lab --allow-root &
 sleep 5
 #启动训练服务
 echo "[startup] Starting Train And Export Service ..."

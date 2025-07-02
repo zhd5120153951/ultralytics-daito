@@ -123,8 +123,12 @@ class trainService(BaseService):
         """_summary_
         移除进程
         """
-        del self.active_procs[process_key]
-        log.logger.info(f"当前训练任务:{process_key}进程移除成功.")
+        proc = self.active_procs.get(process_key, None)  # taskId不存在对应的进程对象
+        if not proc:
+            log.logger.info(f"当前训练任务:{process_key}进程不存在,无需移除.")
+        else:
+            del self.active_procs[process_key]
+            log.logger.info(f"当前训练任务:{process_key}进程移除成功.")
 
     def get_proc(self, process_key: str, log: Logger):
         """_summary_
@@ -195,7 +199,7 @@ class trainService(BaseService):
         labels = train_task_action_opt_msg.get("labels", [])  # list
         ratio = train_task_action_opt_msg.get("ratio", 0)
         train_params = train_task_action_opt_msg.get("trainParams", {})
-        train_params["workers"] = 0
+        # train_params["workers"] = 0#守护训练进程--workers必须为0,非守护训练进程--workers可以任意
         return (action, taskId, modelId, self.lower_en(netType), modelType, prefix, labels, ratio, train_params)
 
     def upload_train_result(self, taskId: str, status: TrainStatusType, message: str):
@@ -229,7 +233,7 @@ class trainService(BaseService):
         if self.get_proc(taskId, repeat_train_log):
             repeat_train_log.logger.info(f"训练任务:{taskId}已经启动运行中,无需重复启动！")
             self.upload_train_result(
-                taskId, TrainStatusType.FAILED, "训练任务重复启动")
+                taskId, TrainStatusType.FAILED, "当前训练任务重复启动,请重试!")
             return
         # 正常启动训练--数据集下载、模型训练、结果上传(异步)
         # 1.数据集并发下载
@@ -255,16 +259,15 @@ class trainService(BaseService):
         dataset.join()  # 这里阻塞,等待数据集的操作全部完成才能训练
         if not dataset.isFinished:
             self.upload_train_result(
-                taskId, TrainStatusType.FAILED, "数据集下载失败")
+                taskId, TrainStatusType.FAILED, f"数据集{datasets}下载失败,请先上传数据集!")
             self.rds.hdel(f"{taskId}_train_status_info", "status", "context")
             return
         # 2.异步训练--classify,detect,obb,segment,pose
         start_train_log = Logger(
             f"{self.logs}/start_train_log_{taskId}.txt", level="info")
         # 每次启动任务都把已经停止的taskId:进程移除
-        for k, v in self.active_procs.items():
-            if not v.is_alive():
-                self.remove_proc(k, start_train_log)
+        for k in list(self.active_procs.keys()):
+            self.remove_proc(k, start_train_log)
         train_task = TrainTask(
             self.rds,
             taskId,
@@ -276,7 +279,7 @@ class trainService(BaseService):
             labels,
             start_train_log)
         p_task = mp.Process(target=train_task.start_train_task)
-        p_task.daemon = True
+        p_task.daemon = False  # 非守护进程(workers任意)
         p_task.start()
         time.sleep(3)
         if p_task.is_alive():
@@ -292,7 +295,7 @@ class trainService(BaseService):
             start_train_log.logger.info(
                 f"训练任务:{taskId}启动失败,时间:{create_time}")
             self.upload_train_result(
-                taskId, TrainStatusType.FAILED, "训练任务进程启动失败")
+                taskId, TrainStatusType.FAILED, f"训练任务{taskId}进程启动失败")
             self.rds.hdel(f"{taskId}_train_status_info", "status", "context")
             return
         # 3.上传minio
@@ -338,26 +341,7 @@ class trainService(BaseService):
                 id='$', mkstream=True)  # 创建消费者组--消费训练配置消息
         while True:
             try:
-                # 检查GPU资源
-                availableGPUId, gpu_unit_use = self.getAvailableGPUId(
-                    train_action_opt_log)
-                if availableGPUId == '-2':
-                    train_action_opt_log.logger.info(
-                        f'训练任务:{taskId}启动时未检测到可用的GPU,训练任务无法正常启动！')
-                    # self.upload_train_result(
-                    #     taskId, TrainStatusType.FAILED, "没检测到显卡,训练任务无法正常启动")
-                    time.sleep(3)
-                    continue
-                elif availableGPUId == '-1':
-                    train_action_opt_log.logger.error(
-                        f'训练任务:{taskId}启动时检测到GPU资源不足,训练任务无法正常启动！')
-                    # self.upload_train_result(
-                    #     taskId, TrainStatusType.FAILED, "GPU资源不足,训练任务无法正常启动")
-                    time.sleep(3)
-                    continue
-                else:
-                    train_action_opt_log.logger.info(
-                        f'训练任务:{taskId}启动时检测到可用GPU:{availableGPUId}的利用率最低,且利用率:{gpu_unit_use}')
+                # 读取Redis消息
                 response = self.rds.xreadgroup(
                     groupname=group_name,
                     consumername=group_name,
@@ -390,6 +374,26 @@ class trainService(BaseService):
                 # 解析训练任务消息
                 action, taskId, modelId, netType, modelType, datasets, labels, ratio, parameters = self.get_task_message(
                     train_task_action_opt_msg)
+                # 检查GPU资源
+                availableGPUId, gpu_unit_use = self.getAvailableGPUId(
+                    train_action_opt_log)
+                if availableGPUId == '-2':
+                    train_action_opt_log.logger.info(
+                        f'训练任务:{taskId}启动时未检测到可用的GPU,训练任务无法正常启动！')
+                    self.upload_train_result(
+                        taskId, TrainStatusType.FAILED, "没检测到显卡,训练任务无法正常启动,请联系管理员!")
+                    time.sleep(3)
+                    continue
+                elif availableGPUId == '-1':
+                    train_action_opt_log.logger.error(
+                        f'训练任务:{taskId}启动时检测到GPU资源不足,训练任务无法正常启动！')
+                    self.upload_train_result(
+                        taskId, TrainStatusType.FAILED, "GPU资源不足,训练任务无法正常启动,请等待其他任务结束后重试!")
+                    time.sleep(3)
+                    continue
+                else:
+                    train_action_opt_log.logger.info(
+                        f'训练任务:{taskId}启动时检测到可用GPU:{availableGPUId}的利用率最低,且利用率:{gpu_unit_use}')
                 # 启用模型训练
                 if action == 'start':
                     # 用这个可以对应多个训练任务
