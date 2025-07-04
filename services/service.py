@@ -231,7 +231,7 @@ class trainService(BaseService):
         repeat_train_log = Logger(
             f'{self.logs}/repeat_train_log_{taskId}.txt', level='info')
         if self.get_proc(taskId, repeat_train_log):
-            repeat_train_log.logger.info(f"训练任务:{taskId}已经启动运行中,无需重复启动！")
+            repeat_train_log.logger.info(f"训练任务:{taskId}已经启动运行中,无需重复启动!")
             self.upload_train_result(
                 taskId, TrainStatusType.FAILED, "当前训练任务重复启动,请重试!")
             return
@@ -253,14 +253,28 @@ class trainService(BaseService):
                           data_yaml_path,
                           downlaod_datasets_log)
         dataset.start()
-        # 设置训练状态--0数据集下载中,1--训练中,2--上传minio中
-        self.rds.hset(f'{taskId}_train_status_info', mapping={
-            "status": 0, "context": "数据集下载中"})
+
+        # 设置训练状态--0数据集下载中,1--训练中,2--训练完成,-1--训练失败
+        # 这里的状态采用hash映射，先检查键的类型，如果不是hash类型则删除
+        status_key = f'{taskId}_train_status_info'
+        try:
+            # 设置初始状态，确保数据类型一致性
+            status_data = {
+                "status": "0",
+                "context": "数据集下载中",
+                "taskId": taskId,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            }
+            self.rds.hset(status_key, mapping=status_data)
+            downlaod_datasets_log.logger.info(
+                f"已设置任务{taskId}初始状态:{status_data}")
+        except Exception as ex:
+            downlaod_datasets_log.logger.error(f"设置任务{taskId}状态时发生错误:{ex}")
         dataset.join()  # 这里阻塞,等待数据集的操作全部完成才能训练
         if not dataset.isFinished:
             self.upload_train_result(
                 taskId, TrainStatusType.FAILED, f"数据集{datasets}下载失败,请先上传数据集!")
-            self.rds.hdel(f"{taskId}_train_status_info", "status", "context")
+            self.rds.delete(status_key)
             return
         # 2.异步训练--classify,detect,obb,segment,pose
         start_train_log = Logger(
@@ -295,8 +309,8 @@ class trainService(BaseService):
             start_train_log.logger.info(
                 f"训练任务:{taskId}启动失败,时间:{create_time}")
             self.upload_train_result(
-                taskId, TrainStatusType.FAILED, f"训练任务{taskId}进程启动失败")
-            self.rds.hdel(f"{taskId}_train_status_info", "status", "context")
+                taskId, TrainStatusType.FAILED, f"训练任务{taskId}进程启动失败!")
+            self.rds.delete(status_key)
             return
         # 3.上传minio
         upload_train_result_log = Logger(
@@ -321,13 +335,23 @@ class trainService(BaseService):
         stop_train_log = Logger(
             f'{self.logs}/stop_train_log_{taskId}.txt', level='info')
         if not self.stop_proc(taskId, stop_train_log):  # 该任务不存在--无需终止
+            self.upload_train_result(
+                taskId, TrainStatusType.KILLED, "训练异常且任务进程已退出,无需终止!")
             stop_train_log.logger.info(f"训练任务{taskId}不存在,无需终止！")
         else:  # 该任务存在--需要终止
-            # 同时训练的状态流应该删除
-            self.rds.hdel(f"{taskId}_train_status_info", "status", "context")
+            # 更新训练状态为失败（手动终止）
+            status_data = {
+                "status": "-1",
+                "context": "训练失败",
+                "taskId": taskId,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            }
+            self.rds.hset(f"{taskId}_train_status_info", mapping=status_data)
             self.upload_train_result(
                 taskId, TrainStatusType.KILLED, "训练任务被手动终止")
             stop_train_log.logger.info(f"已正常停止正在训练中的任务:{taskId}！")
+            stop_train_log.logger.info(
+                f"已更新任务{taskId}状态为训练失败: {status_data}")  # 停止也是失败的一类
 
     def run(self):
         # 消费平台下发的训练任务消息
@@ -369,6 +393,8 @@ class trainService(BaseService):
                 train_action_opt_log.logger.info(f'Redis消息内容:{opt_msg}')
                 train_task_action_opt_msg = json.loads(opt_msg)
                 if train_task_action_opt_msg['ip'] != IP:
+                    self.upload_train_result(
+                        taskId, TrainStatusType.FAILED, "当前服务器配置IP和选择的服务器IP不匹配,请联系管理员!")
                     continue
                 self.rds.xdel(self.train_action_opt_topic_name, message_id)
                 # 解析训练任务消息
@@ -510,7 +536,7 @@ class exportService(BaseService):
 
     def stop_export_process(self, taskId, taskName):
         """
-        导出耗时短，暂不考虑停止
+        导出耗时短，暂不考虑停止，导出进程结束即为停止
         """
         process_key = f"{taskId}_{taskName}"
         stop_export_log = Logger(

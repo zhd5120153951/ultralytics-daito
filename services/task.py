@@ -13,7 +13,6 @@ import os
 import json
 import shutil
 import time
-import datetime
 import asyncio
 from minio.error import S3Error
 from concurrent.futures import ThreadPoolExecutor
@@ -46,30 +45,22 @@ class TrainTask:
         self.labels = labels
         self.log = log
 
-    def regnix_format(self):
-        re_list = []
-        r1 = r"(\d+)/"
-        re_list.append(f"{r1}{self.parameters['epochs']}")
-        r1 = r"^      Epoch"
-        re_list.append(f"{r1}")
-        r1 = r"^                 Class"
-        re_list.append(f"{r1}")
-        r1 = r"^                   all"
-        re_list.append(f"{r1}")
-        for i in range(len(self.labels)):
-            re_list.append(f'^                   {self.labels[i]}')
-        re_format = "|".join(re_list)
-        print(f"re_format:{re_format}")
-        return re_format
-
     def start_train_task(self):
         """_summary_
         启动训练任务
         """
         task_result = {}
         try:
-            self.rds.hset(f'{self.task_id}_train_status_info', mapping={
-                "status": 1, "context": "训练中"})
+            # 更新训练状态为训练中
+            status_data = {
+                "status": "1",
+                "context": "训练中",
+                "taskId": self.task_id,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            }
+            self.rds.hset(f'{self.task_id}_train_status_info',
+                          mapping=status_data)
+            self.log.logger.info(f"已更新任务{self.task_id}状态为训练中:{status_data}")
             train_params = {
                 "data": f"{data_cfg}/{self.task_id}.yaml",
                 "project": train_result,
@@ -99,8 +90,17 @@ class TrainTask:
                             f"找不到迭代训练所需的模型文件:{self.model_id}")
                         self.rds.xadd(train_action_result_topic_name, {
                                       "trainResult": json.dumps(task_result).encode()}, maxlen=100)
-                        self.rds.hdel(
-                            f"{self.task_id}_train_status_info", "status", "context")
+                        # 更新状态为训练失败
+                        status_data = {
+                            "status": "-1",
+                            "context": "训练失败",
+                            "taskId": self.task_id,
+                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        }
+                        self.rds.hset(
+                            f'{self.task_id}_train_status_info', mapping=status_data)
+                        self.log.logger.info(
+                            f"已更新任务{self.task_id}状态为训练失败:{status_data}")
                         return
                     if self.net_type.startswith("yolov5"):
                         model_cfg = f"{pretrained_models}/{self.net_type}u.yaml"
@@ -118,8 +118,17 @@ class TrainTask:
                 }
                 self.rds.xadd(train_action_result_topic_name, {
                     "trainResult": json.dumps(task_result).encode()}, maxlen=100)
-                self.rds.hdel(
-                    f"{self.task_id}_train_status_info", "status", "context")
+                # 更新状态为训练失败
+                status_data = {
+                    "status": "-1",
+                    "context": "训练失败",
+                    "taskId": self.task_id,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                }
+                self.rds.hset(
+                    f'{self.task_id}_train_status_info', mapping=status_data)
+                self.log.logger.info(
+                    f"已更新任务{self.task_id}状态为训练失败:{status_data}")
                 return
             # 加载模型
             self.log.logger.info(f"开始加载模型:{model_cfg},权重路径:{model_path}")
@@ -140,8 +149,17 @@ class TrainTask:
                 self.log.logger.error(f"训练完成后找不到模型文件:{model_trained_path}")
                 self.rds.xadd(train_action_result_topic_name, {
                     "trainResult": json.dumps(task_result).encode()}, maxlen=100)
-                self.rds.hdel(
-                    f"{self.task_id}_train_status_info", "status", "context")
+                # 更新状态为训练失败
+                status_data = {
+                    "status": "-1",
+                    "context": "训练失败",
+                    "taskId": self.task_id,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                }
+                self.rds.hset(
+                    f'{self.task_id}_train_status_info', mapping=status_data)
+                self.log.logger.info(
+                    f"已更新任务{self.task_id}状态为训练失败:{status_data}")
                 return
             # 保存一份训练好的pt模型--导出用
             shutil.copy(model_trained_path, model_rename_path)
@@ -155,9 +173,16 @@ class TrainTask:
                 self.rds.xadd(train_action_result_topic_name, {
                     "trainResult": json.dumps(task_result).encode()}, maxlen=100)
             self.log.logger.info(success_msg)
-            # 训练完成,马上删除状态流,开始上传minio
-            self.rds.hdel(
-                f"{self.task_id}_train_status_info", "status", "context")
+            # 训练完成,更新状态,开始上传minio
+            status_data = {
+                "status": "2",
+                "context": "训练完成",
+                "taskId": self.task_id,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            }
+            self.rds.hset(f'{self.task_id}_train_status_info',
+                          mapping=status_data)
+            self.log.logger.info(f"已更新任务{self.task_id}状态为训练完成:{status_data}")
         except Exception as ex:
             error_msg = f"训练任务:{self.task_id}失败,异常信息:{ex}"
             task_result = {
@@ -169,9 +194,16 @@ class TrainTask:
                 self.rds.xadd(train_action_result_topic_name, {
                     "trainResult": json.dumps(task_result).encode()}, maxlen=100)
             self.log.logger.error(error_msg)
-            # 训练失败,也要删除,并且还是上传(文件不全),但可以辅助查看训练失败的原因
-            self.rds.hdel(
-                f"{self.task_id}_train_status_info", "status", "context")
+            # 训练异常
+            status_data = {
+                "status": "-1",
+                "context": "训练失败",
+                "taskId": self.task_id,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            }
+            self.rds.hset(f'{self.task_id}_train_status_info',
+                          mapping=status_data)
+            self.log.logger.info(f"已更新任务{self.task_id}状态为训练失败:{status_data}")
 
     def stop_train_task(self):
         """_summary_
@@ -255,7 +287,7 @@ class ExportTask:
         try:
             model_path = f"{export_result}/{self.model_id}.pt"
             imgsz = [640, 640]  # 这里导出模型输入尺寸可以由web给出,通用的是640,其他的1280
-            # 检查模型文件是否存在
+            # 检查模型文件是否存在--不存在(导出失败--结束)
             if not os.path.exists(model_path):
                 error_msg = f"找不到要导出的模型文件:{model_path}"
                 task_result = {
@@ -267,6 +299,8 @@ class ExportTask:
                 if hasattr(self, "rds"):
                     self.rds.xadd(export_action_result_topic_name, {
                                   "exportResult": json.dumps(task_result).encode()}, maxlen=100)
+                return
+            # 开始导出
             if self.export_type in support_export_type:
                 self.log.logger.info(
                     f"开始导出模型:{model_path},格式:{self.export_type}")

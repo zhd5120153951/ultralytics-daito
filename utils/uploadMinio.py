@@ -43,7 +43,9 @@ class uploadMinio(Thread):
         super().__init__()
         self.rds = rds
         self.process_key = taskId
-        self.train_task_status_topic_name = f"{self.process_key}_train_status_info"
+        self.train_task_status_topic_name = f"{taskId}_train_status_info"
+        self.max_retry_count = 30  # 最大重试次数
+        self.cur_retry_count = 0  # 当前重试次数
         self.minio_client = minio_client
         self.bucket = bucket
         # **********************
@@ -108,31 +110,117 @@ class uploadMinio(Thread):
         # 并发执行所有上传任务
         await asyncio.gather(*tasks)
 
+    def _decode_redis_hash(self, redis_hash):
+        """
+        解码Redis hash数据，处理字节类型的键值对
+        :param redis_hash: Redis hgetall返回的字典
+        :return: 解码后的字典
+        """
+        if not redis_hash:
+            return {}
+
+        decoded_hash = {}
+        for key, value in redis_hash.items():
+            # 处理键的解码
+            if isinstance(key, bytes):
+                key = key.decode('utf-8')
+            # 处理值的解码
+            if isinstance(value, bytes):
+                value = value.decode('utf-8')
+            decoded_hash[key] = value
+        return decoded_hash
+
+    def _validate_status_info(self, status_info):
+        """
+        验证状态信息的完整性
+        :param status_info: 状态信息字典
+        :return: (is_valid, status, context)
+        """
+        if not status_info:
+            return False, None, "状态信息为空"
+
+        if 'status' not in status_info:
+            return False, None, "缺少status字段"
+
+        status = str(status_info['status']).strip()
+        context = status_info.get('context', '未知状态')
+
+        # 验证status值的有效性
+        valid_statuses = ['-1', '0', '1', '2']
+        if status not in valid_statuses:
+            return False, status, f"无效的状态值: {status}"
+
+        return True, status, context
+
     def run(self):
         """
         重写Thread的run方法,启动asyncio事件循环执行所有上传任务
         """
         time.sleep(5)
-        while True:  # 判断训练还在不在？不在--上传,在--等待
-            if not self.rds.exists(self.train_task_status_topic_name):
-                try:
-                    asyncio.run(self.upload_all_files())
-                except Exception as ex:
-                    self.log.logger.error(f'上传过程发生错误:{ex}')
-                break
-            else:
+        self.log.logger.info(f'开始监控训练任务{self.process_key}的训练状态!')
+
+        while True:
+            try:
+                # 检查重试次数
+                if self.cur_retry_count >= self.max_retry_count:
+                    self.log.logger.error(
+                        f'任务{self.process_key}超过最大重试次数({self.max_retry_count}),停止监控,上传失败!')
+                    break
+
+                # 获取Redis训练状态的hash数据
+                ret = self.rds.hgetall(self.train_task_status_topic_name)
+
+                # 解码Redis数据
+                decoded_ret = self._decode_redis_hash(ret)
+
+                # 验证状态信息
+                is_valid, status, context = self._validate_status_info(
+                    decoded_ret)
+
+                if not is_valid:
+                    self.cur_retry_count += 1
+                    self.log.logger.warning(
+                        f'训练任务{self.process_key}状态信息无效:{context},重试次数:{self.cur_retry_count}/{self.max_retry_count}')
+                    time.sleep(3)
+                    continue
+
+                # 重置重试计数器（成功获取到有效状态）
+                self.cur_retry_count = 0
+
+                # 处理不同的状态
+                if status == '-1':
+                    self.log.logger.info(
+                        f'训练失败,任务{self.process_key}未上传,状态详情:{context}')
+                    break
+                elif status == '2':
+                    self.log.logger.info(
+                        f'训练完成,开始上传任务{self.process_key},状态详情:{context}')
+                    try:
+                        asyncio.run(self.upload_all_files())
+                        self.log.logger.info(f'上传任务{self.process_key}成功完成!')
+                    except Exception as ex:
+                        self.log.logger.error(f'上传过程发生错误:{ex}')
+                    break
+                elif status == '0':
+                    self.log.logger.info(
+                        f'任务{self.process_key}数据集下载中,等待训练开始!')
+                elif status == '1':
+                    self.log.logger.info(f'任务{self.process_key}训练中,等待训练完成!')
+                else:
+                    self.log.logger.warning(
+                        f'任务{self.process_key}未知状态:{status},继续等待!')
                 time.sleep(3)
+
+            except Exception as ex:
+                self.cur_retry_count += 1
+                self.log.logger.error(
+                    f'监控任务{self.process_key}状态时发生异常:{ex},重试次数:{self.cur_retry_count}/{self.max_retry_count}')
+                time.sleep(5)  # 异常时等待更长时间
                 continue
-        self.log.logger.info(f'上传任务{self.process_key}结束')
-        # while True:  # 判断训练还在不在？不在--上传,在--等待
-        #     if not self.active_procs[self.process_key].is_alive():
-        #         del self.active_procs[self.process_key]
-        #         try:
-        #             asyncio.run(self.upload_all_files())
-        #         except Exception as ex:
-        #             self.log.logger.error(f'上传过程发生错误:{ex}')
-        #         break
-        #     else:
-        #         time.sleep(3)
-        #         continue
-        # self.log.logger.info(f'上传任务{self.process_key}结束')
+
+        # 清理Redis状态信息
+        try:
+            self.rds.delete(self.train_task_status_topic_name)
+            self.log.logger.info(f'已删除任务{self.process_key}的状态hash信息!')
+        except Exception as ex:
+            self.log.logger.error(f'删除任务{self.process_key}的状态hash信息时发生错误:{ex}')
