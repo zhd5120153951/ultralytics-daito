@@ -110,6 +110,16 @@ class uploadMinio(Thread):
         # 并发执行所有上传任务
         await asyncio.gather(*tasks)
 
+    def _cleanup_executors(self):
+        """清理线程池资源"""
+        try:
+            # 关闭数据增强线程池
+            if hasattr(self, 'executor') and self.executor:
+                self.executor.shutdown(wait=True)
+                self.log.logger.info(f"任务{self.process_key}的训练结果上传线程池已关闭")
+        except Exception as ex:
+            self.log.logger.error(f"清理任务{self.process_key}线程池资源异常,错误:{ex}")
+
     def _decode_redis_hash(self, redis_hash):
         """
         解码Redis hash数据，处理字节类型的键值对
@@ -222,5 +232,7 @@ class uploadMinio(Thread):
         try:
             self.rds.delete(self.train_task_status_topic_name)
             self.log.logger.info(f'已删除任务{self.process_key}的状态hash信息!')
+            # 上传完成后,释放线程池资源
+            self._cleanup_executors()
         except Exception as ex:
             self.log.logger.error(f'删除任务{self.process_key}的状态hash信息时发生错误:{ex}')

@@ -253,9 +253,9 @@ class ExportTask:
         self.local_folder = f"{export_result}/{model_id}_paddle_model"  # 本地目录
         self.remote_prefix = f"{minio_prefix}/{task_id}".rstrip(
             '/')  # minio目录
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.export_executor = ThreadPoolExecutor(max_workers=max_workers)
 
-    def _get_all_files(self):
+    def _get_all_files_exported(self):
         """_summary_
         遍历本地文件夹及其子目录,返回一个包含所有文件完整路径和相对路径的列表
         return: [(full_path, relative_path), ...]
@@ -269,7 +269,7 @@ class ExportTask:
                 files_list.append((full_path, rel_path))
         return files_list
 
-    async def upload_file(self, full_path: str, rel_path: str):
+    async def upload_file_exported(self, full_path: str, rel_path: str):
         """_summary_
 
         Args:
@@ -280,18 +280,28 @@ class ExportTask:
         loop = asyncio.get_event_loop()
         self.log.logger.info(f"开始上传文件:{full_path}到minio:{remote_key}")
         try:
-            await loop.run_in_executor(self.executor, self.minio_client.fput_object, self.bucket, remote_key, full_path)
+            await loop.run_in_executor(self.export_executor, self.minio_client.fput_object, self.bucket, remote_key, full_path)
             self.log.logger.info(f"文件:{full_path}上传成功")
         except S3Error as s3e:
             self.log.logger.error(f"文件:{full_path}上传失败:{s3e}")
 
-    async def upload_all_files(self):  # 异步函数
+    async def upload_all_files_exported(self):  # 异步函数
         """异步任务:上传所有文件到minio"""
         tasks = []
-        files = self._get_all_files()
+        files = self._get_all_files_exported()
         for full_path, rel_path in files:
-            tasks.append(self.upload_file(full_path, rel_path))
+            tasks.append(self.upload_file_exported(full_path, rel_path))
         await asyncio.gather(*tasks)  # 并发执行所有上传任务,此处会阻塞直到所有任务完成
+
+    def _cleanup_executors(self):
+        """清理线程池资源"""
+        try:
+            # 关闭数据增强线程池
+            if hasattr(self, 'export_executor') and self.export_executor:
+                self.export_executor.shutdown(wait=True)
+                self.log.logger.info(f"任务{self.task_id}的上传导出线程池已关闭")
+        except Exception as ex:
+            self.log.logger.error(f"清理任务{self.task_id}线程池资源异常,错误:{ex}")
 
     def start_export_task(self):
         """_summary_
@@ -327,7 +337,7 @@ class ExportTask:
                              opset=12,
                              device="0")
                 # 上传导出结果
-                asyncio.run(self.upload_all_files())
+                asyncio.run(self.upload_all_files_exported())
                 success_msg = f"导出任务+上传任务:{self.task_id}完成,耗时:{(time.time()-start_time):.3f}s"
                 self.log.logger.info(success_msg)
                 task_result = {
@@ -338,6 +348,8 @@ class ExportTask:
                 if hasattr(self, "rds"):
                     self.rds.xadd(export_action_result_topic_name, {
                                   "exportResult": json.dumps(task_result).encode()}, maxlen=100)
+                # 关闭导出上传线程池
+                self._cleanup_executors()
             else:
                 error_msg = f"不支持的导出类型:{self.export_type},目前支持的导出类型有:{support_export_type}"
                 self.log.logger.error(error_msg)
@@ -349,6 +361,8 @@ class ExportTask:
                 if hasattr(self, "rds"):
                     self.rds.xadd(export_action_result_topic_name, {
                         "exportResult": json.dumps(task_result).encode()}, maxlen=100)
+                # 关闭导出上传线程池
+                self._cleanup_executors()
         except Exception as ex:
             error_msg = f"导出上传任务:{self.task_id}失败,异常信息:{ex}"
             self.log.logger.error(error_msg)
@@ -360,6 +374,8 @@ class ExportTask:
             if hasattr(self, 'rds'):
                 self.rds.xadd(export_action_result_topic_name, {
                     'exportResult': json.dumps(task_result).encode()}, maxlen=100)
+            # 关闭导出上传线程池
+            self._cleanup_executors()
             # 确保进程能够正常退出
 
     def stop_export_task(self):
@@ -397,11 +413,12 @@ class EnhanceTask:
         self.rds = rds  # 添加Redis客户端，用于状态更新和消息发送
         # 本地存放结果目录enhance_results/taskId
         self.enhance_dir = os.path.join(enhance_result, task_id)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        # 数据增强线程池
+        self.enhance_executor = ThreadPoolExecutor(max_workers=max_workers)
         # 初始化imgaug随机种子
         ia.seed(42)
 
-    def _get_all_files(self):
+    def _get_all_files_enhanced(self):
         """_summary_
         遍历本地文件夹及其子目录,返回一个包含所有文件完整路径和相对路径的列表
         return: [(full_path, relative_path), ...]
@@ -415,30 +432,95 @@ class EnhanceTask:
                 files_list.append((full_path, rel_path))
         return files_list
 
-    async def upload_file(self, full_path: str, rel_path: str):
+    async def upload_file_enhanced(self, full_path: str, rel_path: str, retry_count: int = 3):
         """_summary_
 
         Args:
             full_path (str): 本地文件的完整路径
             rel_path (str): 文件相对于本地根目录的相对路径
+            retry_count (int): 重试次数，默认3次
         """
         remote_key = f"{self.minio_prefix}/{self.task_id}/{rel_path}".replace(
             "\\", "/")
         loop = asyncio.get_event_loop()
-        self.log.logger.info(f"开始上传文件:{full_path}到minio:{remote_key}")
-        try:
-            await loop.run_in_executor(self.executor, self.minio_client.fput_object, self.bucket, remote_key, full_path)
-            self.log.logger.info(f"文件:{full_path}上传成功")
-        except S3Error as s3e:
-            self.log.logger.error(f"文件:{full_path}上传失败:{s3e}")
 
-    async def upload_all_files(self):  # 异步函数
+        for attempt in range(retry_count):
+            try:
+                await loop.run_in_executor(self.enhance_executor, self.minio_client.fput_object, self.bucket, remote_key, full_path)
+                return True
+            except S3Error as s3e:
+                if attempt < retry_count - 1:
+                    wait_time = (attempt + 1) * 2  # 递增等待时间
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    self.log.logger.error(
+                        f"文件:{full_path}上传失败，已重试{retry_count}次:{s3e}")
+                    return False
+            except Exception as e:
+                if attempt < retry_count - 1:
+                    wait_time = (attempt + 1) * 2
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    self.log.logger.error(
+                        f"文件:{full_path}上传异常，已重试{retry_count}次:{e}")
+                    return False
+        return False
+
+    async def upload_all_files_enhanced(self):  # 异步函数
         """异步任务:上传所有文件到minio"""
-        tasks = []
-        files = self._get_all_files()
-        for full_path, rel_path in files:
-            tasks.append(self.upload_file(full_path, rel_path))
-        await asyncio.gather(*tasks)  # 并发执行所有上传任务,此处会阻塞直到所有任务完成
+        files = self._get_all_files_enhanced()
+        total_files = len(files)
+
+        if total_files == 0:
+            self.log.logger.info("没有增强文件需要上传")
+            return
+
+        self.log.logger.info(f"开始上传{total_files}个增强文件到MinIO")
+
+        # 分批上传，每批最多100个文件
+        batch_size = min(100, max(10, total_files // 4))  # 动态调整批次大小
+        success_count = 0
+        failed_count = 0
+
+        for i in range(0, total_files, batch_size):
+            batch_files = files[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            total_batches = (total_files + batch_size - 1) // batch_size
+
+            self.log.logger.info(
+                f"正在处理第{batch_num}/{total_batches}批增强文件，包含{len(batch_files)}个文件")
+
+            # 创建当前批次的上传任务
+            tasks = []
+            for full_path, rel_path in batch_files:
+                tasks.append(self.upload_file_enhanced(full_path, rel_path))
+
+            # 并发执行当前批次的上传任务
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # 统计结果
+            batch_success = sum(1 for result in results if result is True)
+            batch_failed = len(results) - batch_success
+            success_count += batch_success
+            failed_count += batch_failed
+
+            self.log.logger.info(
+                f"第{batch_num}批增强文件完成: 成功{batch_success}个,失败{batch_failed}个")
+
+            # 批次间短暂休息，避免资源过度占用
+            if i + batch_size < total_files:
+                await asyncio.sleep(0.5)
+
+        self.log.logger.info(
+            f"增强文件上传完成: 总计{total_files}个，成功{success_count}个，失败{failed_count}个")
+
+        if failed_count > 0:
+            self.log.logger.warning(
+                f"有{failed_count}个增强文件上传失败，请检查网络连接和MinIO服务状态")
+
+        return success_count, failed_count
 
     def _get_image_files_from_origin(self):
         """获取所有下载的图像文件"""
@@ -647,20 +729,7 @@ class EnhanceTask:
             if image is None:
                 self.log.logger.error(f"无法读取图像:{full_path}")
                 return False
-            # 移动到外面去--不用重复构建判断
-            # 创建输出目录:taskId-data1,data2,...,dataN
-            # output_base_dir = os.path.join(
-            #     enhance_result, self.task_id, data_name)
-            # if not os.path.exists(output_base_dir):
-            #     os.makedirs(output_base_dir, exist_ok=True)
 
-            # 保持原始目录结构
-            # rel_dir = os.path.dirname(rel_path)
-            # if rel_dir:
-            #     output_dir = os.path.join(output_base_dir, rel_dir)
-            #     os.makedirs(output_dir, exist_ok=True)
-            # else:
-            #     output_dir = output_base_dir
             output_dir = os.path.join(self.enhance_dir, data_name)
 
             # 获取原始文件名和扩展名
@@ -738,6 +807,16 @@ class EnhanceTask:
         except Exception as ex:
             self.log.logger.error(f"删除任务{self.task_id}生成的图像异常,错误:{ex}")
 
+    def _cleanup_executors(self):
+        """清理线程池资源"""
+        try:
+            # 关闭数据增强线程池
+            if hasattr(self, 'enhance_executor') and self.enhance_executor:
+                self.enhance_executor.shutdown(wait=True)
+                self.log.logger.info(f"任务{self.task_id}的数据增强线程池已关闭")
+        except Exception as ex:
+            self.log.logger.error(f"清理任务{self.task_id}线程池资源异常,错误:{ex}")
+
     def start_enhance_task(self):
         """_summary_
         启动增强任务
@@ -796,8 +875,13 @@ class EnhanceTask:
                         'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
                 return
 
-            # 4. 上传增强结果到MinIO
-            asyncio.run(self.upload_all_files())
+            # 4. 上传增强结果到MinIO--已优化：分批上传、重试机制、专用线程池
+            upload_success, upload_failed = asyncio.run(
+                self.upload_all_files_enhanced())
+
+            if upload_failed > 0:
+                self.log.logger.warning(
+                    f"部分文件上传失败:成功{upload_success}个,失败{upload_failed}个!")
 
             # 5. 完成任务
             duration = time.time() - start_time
@@ -815,6 +899,9 @@ class EnhanceTask:
             # 6.删除本地增强图像
             if not save_enhance_result:
                 self._delete_local_files()
+
+            # 7.清理线程池资源
+            self._cleanup_executors()
             return
         except Exception as ex:
             duration = time.time() - start_time
@@ -829,6 +916,9 @@ class EnhanceTask:
                 }
                 self.rds.xadd(enhance_action_result_topic_name, {
                     'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+
+            # 清理线程池资源
+            self._cleanup_executors()
             return
 
     def stop_enhance_task(self):

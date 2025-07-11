@@ -21,6 +21,7 @@ from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
 from .logModels import Logger
+from ..config import max_workers
 
 
 class Dataset(Thread):
@@ -61,7 +62,7 @@ class Dataset(Thread):
                         for item in datasets]  # 本地目录
         self.minio_client = minio
         # 创建线程池--异步执行各种任务
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.daemon = True  # 外部使用对象.setDaemon()
 
     # 私有属性访问接口
@@ -346,7 +347,7 @@ class DownloadDataset(Thread):
                          for item in data]  # minio目录和本地目录结构相同
         self.log = log
         # 创建线程池--异步执行各种任务
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.daemon = True  # 外部使用对象.setDaemon()
 
     # 私有属性访问接口
