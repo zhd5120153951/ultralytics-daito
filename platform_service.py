@@ -20,14 +20,18 @@ from config import (redis_ip,
                     pretrained_models,
                     train_result,
                     export_result,
+                    enhance_result,
                     train_action_opt_topic_name,
                     train_action_result_topic_name,
                     export_action_opt_topic_name,
-                    export_action_result_topic_name)
+                    export_action_result_topic_name,
+                    enhance_action_opt_topic_name,
+                    enhance_action_result_topic_name,
+                    enhance_service_enable)
 
 
 from ultralytics.utils import SettingsManager
-from services import trainService, exportService
+from services import trainService, exportService, EnhanceService
 settings = SettingsManager()
 settings.update(datasets_dir="")
 
@@ -36,13 +40,24 @@ def main():
     '''
     训练平台主进程:启动导出任务、训练任务
     '''
-    # 创建必要的目录
-    for dir in [data_cfg, logs, pretrained_models, train_result, export_result]:
-        if not os.path.exists(dir):
-            os.makedirs(dir, exist_ok=True)
-
-    # 启动导出任务进程
     try:
+        # 创建必要的目录
+        for dir in [data_cfg, logs, pretrained_models, train_result, export_result, enhance_result]:
+            if not os.path.exists(dir):
+                os.makedirs(dir, exist_ok=True)
+        if enhance_service_enable:  # 启用数据增强服务
+            # 启动图像增强进程
+            enhance_service = EnhanceService(redis_ip,
+                                             redis_port,
+                                             redis_pwd,
+                                             redis_db,
+                                             logs,
+                                             enhance_action_opt_topic_name,
+                                             enhance_action_result_topic_name)
+            enhance_proc = multiprocessing.Process(target=enhance_service.run)
+            enhance_proc.start()
+
+        # 启动导出任务进程
         export_service = exportService(redis_ip,
                                        redis_port,
                                        redis_pwd,
@@ -52,7 +67,8 @@ def main():
                                        export_action_result_topic_name)
         export_proc = multiprocessing.Process(target=export_service.run)
         export_proc.start()
-        # 启动训练任务进程
+
+        # 启动训练任务主进程中(改为独立进程而不是在主进程中运行?)
         train_service = trainService(redis_ip,
                                      redis_port,
                                      redis_pwd,
@@ -62,8 +78,12 @@ def main():
                                      train_action_result_topic_name)
         train_service.run()
     except KeyboardInterrupt:
-        print("中断服务,终止进程.")
+        print("中断服务,终止进程!")
+        if enhance_service_enable:
+            enhance_proc.terminate()
         export_proc.terminate()
+        if enhance_service_enable:
+            enhance_proc.join(5)
         export_proc.join(5)
 
 

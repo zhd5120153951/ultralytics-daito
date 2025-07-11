@@ -24,3 +24,10 @@ class ExportStatusType(str, Enum):
     """导出状态枚举"""
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
+
+
+class EnhanceStatusType(str, Enum):
+    """增强状态枚举"""
+    SUCCESS = "SUCCESS"
+    RUNNING = "RUNNING"
+    FAILED = "FAILED"

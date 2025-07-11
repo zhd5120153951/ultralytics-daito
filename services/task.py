@@ -13,20 +13,27 @@ import os
 import json
 import shutil
 import time
+import cv2
 import asyncio
+import imgaug as ia
+import imgaug.augmenters as iaa
 from minio.error import S3Error
 from concurrent.futures import ThreadPoolExecutor
 from ultralytics import YOLO
-from utils import find_pt, TrainStatusType
+from utils import find_pt, TrainStatusType, ExportStatusType, EnhanceStatusType
 from config import (data_cfg,
                     pretrained_models,
                     train_result,
                     export_result,
+                    enhance_result,
+                    save_enhance_result,
                     support_net_type,
                     support_export_type,
                     train_action_result_topic_name,
-                    export_action_result_topic_name)
-from utils.status import ExportStatusType
+                    export_action_result_topic_name,
+                    enhance_action_result_topic_name)
+
+# 训练任务类
 
 
 class TrainTask:
@@ -135,6 +142,13 @@ class TrainTask:
             model = YOLO(model_cfg).load(self.rds, self.task_id, model_path)
             # 开始训练
             self.log.logger.info(f"开始训练模型,训练参数:{train_params}")
+            task_result = {
+                "taskId": self.task_id,
+                "status": TrainStatusType.RUNNING,
+                "message": "开始训练"
+            }
+            self.rds.xadd(train_action_result_topic_name, {
+                "trainResult": json.dumps(task_result).encode()}, maxlen=100)
             start_time = time.time()
             model.train(**train_params)
             # 训练完成，复制模型文件
@@ -220,6 +234,8 @@ class TrainTask:
     def get_train_task_log(self):
         pass
 
+# 导出任务类
+
 
 class ExportTask:
     """_summary_
@@ -234,9 +250,9 @@ class ExportTask:
         self.bucket = bucket
         self.log = log
         self.rds = rds  # 添加Redis客户端，用于状态更新和消息发送
-        self.local_folder = f"{export_result}/{model_id}_paddle_model"
+        self.local_folder = f"{export_result}/{model_id}_paddle_model"  # 本地目录
         self.remote_prefix = f"{minio_prefix}/{task_id}".rstrip(
-            '/')
+            '/')  # minio目录
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
     def _get_all_files(self):
@@ -359,4 +375,473 @@ class ExportTask:
         pass
 
     def get_export_task_log(self):
+        pass
+
+# 增强任务类
+
+
+class EnhanceTask:
+    """_summary_
+    增强任务类:负责单个增强任务的执行和管理
+    """
+
+    def __init__(self, task_id, minio_client, bucket, local_prefix, minio_prefix, data, algoType, max_workers, log, rds=None):
+        self.task_id = task_id
+        self.minio_client = minio_client
+        self.bucket = bucket  # 桶:enhance
+        self.local_prefix = local_prefix  # 本地:origin_data
+        self.minio_prefix = minio_prefix  # minio:enhance_data
+        self.data = data  # list
+        self.algoType = algoType
+        self.log = log
+        self.rds = rds  # 添加Redis客户端，用于状态更新和消息发送
+        # 本地存放结果目录enhance_results/taskId
+        self.enhance_dir = os.path.join(enhance_result, task_id)
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        # 初始化imgaug随机种子
+        ia.seed(42)
+
+    def _get_all_files(self):
+        """_summary_
+        遍历本地文件夹及其子目录,返回一个包含所有文件完整路径和相对路径的列表
+        return: [(full_path, relative_path), ...]
+        """
+        files_list = []
+        for root, _, files in os.walk(self.enhance_dir):
+            for file in files:
+                full_path = os.path.join(root, file)
+                # 计算相对于local_folder的相对路径
+                rel_path = os.path.relpath(full_path, self.enhance_dir)
+                files_list.append((full_path, rel_path))
+        return files_list
+
+    async def upload_file(self, full_path: str, rel_path: str):
+        """_summary_
+
+        Args:
+            full_path (str): 本地文件的完整路径
+            rel_path (str): 文件相对于本地根目录的相对路径
+        """
+        remote_key = f"{self.minio_prefix}/{self.task_id}/{rel_path}".replace(
+            "\\", "/")
+        loop = asyncio.get_event_loop()
+        self.log.logger.info(f"开始上传文件:{full_path}到minio:{remote_key}")
+        try:
+            await loop.run_in_executor(self.executor, self.minio_client.fput_object, self.bucket, remote_key, full_path)
+            self.log.logger.info(f"文件:{full_path}上传成功")
+        except S3Error as s3e:
+            self.log.logger.error(f"文件:{full_path}上传失败:{s3e}")
+
+    async def upload_all_files(self):  # 异步函数
+        """异步任务:上传所有文件到minio"""
+        tasks = []
+        files = self._get_all_files()
+        for full_path, rel_path in files:
+            tasks.append(self.upload_file(full_path, rel_path))
+        await asyncio.gather(*tasks)  # 并发执行所有上传任务,此处会阻塞直到所有任务完成
+
+    def _get_image_files_from_origin(self):
+        """获取所有下载的图像文件"""
+        image_files = []
+        supported_formats = ('.jpg', '.jpeg', '.png')
+
+        for data_name in self.data:
+            origin_path = os.path.join(self.local_prefix, data_name)
+            if os.path.exists(origin_path):
+                for root, dirs, files in os.walk(origin_path):
+                    for file in files:
+                        if file.lower().endswith(supported_formats):
+                            full_path = os.path.join(root, file)
+                            # 计算相对于origin_path的相对路径
+                            rel_path = os.path.relpath(full_path, origin_path)
+                            image_files.append(
+                                (full_path, rel_path, data_name))
+        return image_files
+
+    def _create_augmentation_pipeline(self, algo_type: dict):
+        """根据algoType创建imgaug增强管道"""
+        augmenters = []
+        try:
+            ######## 几何变换#######
+            # 1.翻转
+            flip = algo_type.get('flip', False)
+            if flip:  # 默认不翻转
+                # 水平翻转
+                augmenters.append(iaa.Fliplr(flip.get('flip_x', 0)))
+                # 垂直翻转
+                augmenters.append(iaa.Flipud(flip.get('flip_y', 0)))
+
+            # 2.旋转
+            rotation = algo_type.get('rotation', False)
+            if rotation:  # 默认不旋转
+                angle = rotation.get('rotation_angle', 0)
+                # 顺时针>0,逆时针<0,[-360,360]
+                augmenters.append(iaa.Rotate(angle))
+
+            # 3.平移
+            translate = algo_type.get('translate', False)
+            if translate:  # 默认不平移
+                x_percent = translate.get('translate_x_percent', 0)
+                y_percent = translate.get('translate_y_percent', 0)
+                # 水平,[-1,1]
+                augmenters.append(iaa.TranslateX(
+                    percent=(-x_percent, x_percent)))
+                # 垂直,[-1,1]
+                augmenters.append(iaa.TranslateY(
+                    percent=(-y_percent, y_percent)))
+            # 4.裁剪
+            crop = algo_type.get('crop', False)
+            if crop:
+                percent = crop.get('crop_percent', 0)
+                width = crop.get('crop_width', 1024)
+                height = crop.get('crop_height', 1024)
+                # augmenters.append(iaa.Crop(percent=(0, percent)))#范围代表随机取值
+                # 百分比裁剪:[0,1]
+                augmenters.append(iaa.Crop(percent=percent))
+                # 中心裁剪:width,height
+                augmenters.append(iaa.CenterCropToFixedSize(
+                    width=width, height=height))
+
+            # 5.缩放
+            scale = algo_type.get('scale', False)
+            if scale:
+                scale_percent = scale.get('scale_percent', 1)
+                # 百分比缩放:>1放大,<1缩小
+                augmenters.append(iaa.Affine(scale=scale_percent))
+
+            # 6.透视变换
+            perspective = algo_type.get('perspective', False)
+            if perspective:
+                # 透视变换参数
+                perspective_range = perspective.get(
+                    'perspective_range', 0)
+                # 透视变换
+                augmenters.append(iaa.PerspectiveTransform(
+                    scale=(-perspective_range, perspective_range)))
+            ######### 颜色变换##########
+            # 7.亮度
+            brightness = algo_type.get('brightness', False)
+            if brightness:
+                factor = brightness.get('brightness_factor', 0)
+                # >0增亮,<0变暗
+                augmenters.append(iaa.AddToBrightness(factor))
+            # 8.对比度
+            contrast = algo_type.get('contrast', False)
+            if contrast:
+                factor = contrast.get('contrast_factor', 1)
+                # >1增加对比度,<1减少对比度
+                augmenters.append(iaa.LinearContrast(factor))
+            # 9.饱和度
+            saturation = algo_type.get('saturation', False)
+            if saturation:
+                factor = saturation.get('saturation_factor', 1)
+                # >1增加饱和度,<1减少饱和度
+                augmenters.append(iaa.MultiplySaturation(factor))
+            # 10.色调
+            hue = algo_type.get('hue', False)
+            if hue:
+                factor = hue.get('hue_factor', 0)
+                # [-180,180]
+                augmenters.append(iaa.AddToHue(factor))
+            # 11.灰度
+            gray = algo_type.get('gray', False)
+            if gray:
+                factor = gray.get('gray_factor', 0)
+                # >0灰度化,<0反灰度化
+                augmenters.append(iaa.Grayscale(factor))
+            # 12.透明度
+            alpha = algo_type.get('alpha', False)
+            if alpha:
+                factor = alpha.get('alpha_factor', 0)
+                # >0增加透明度,<0减少透明度
+                augmenters.append(iaa.AddToAlpha(factor))
+            ########## 质量模拟###########
+            # 12.高斯模糊
+            gaussian_blur = algo_type.get('gaussian_blur', False)
+            if gaussian_blur:
+                sigma = gaussian_blur.get('blur_sigma', 0)
+                augmenters.append(iaa.GaussianBlur(sigma=sigma))
+            # 13.运动模糊
+            motion_blur = algo_type.get('motion_blur', False)
+            if motion_blur:
+                k = motion_blur.get('blur_k', 0)
+                angle = motion_blur.get('blur_angle', 0)
+                augmenters.append(iaa.MotionBlur(k=k, angle=angle))
+            # 14.锐化
+            sharpen = algo_type.get('sharpen', False)
+            if sharpen:
+                # 锐化系数[0,1]
+                alpha = sharpen.get('sharpen_alpha', 0)
+                # 锐化系数[0,1]
+                lightness = sharpen.get('sharpen_lightness', 0)
+                augmenters.append(iaa.Sharpen(
+                    alpha=alpha, lightness=lightness))
+            # 15.高斯噪声
+            gaussian_noise = algo_type.get('gaussian_noise', False)
+            if gaussian_noise:
+                scale = gaussian_noise.get('noise_scale', 0)
+                # [0,1]
+                augmenters.append(iaa.AdditiveGaussianNoise(scale=scale*255))
+            # 16.椒盐噪声
+            pepper_noise = algo_type.get('pepper_noise', False)
+            if pepper_noise:
+                # 椒盐噪声比例[0,1]
+                pepper_percent = pepper_noise.get('pepper_percent', 0)
+                augmenters.append(iaa.SaltAndPepper(pepper_percent))
+            # 17.泊松噪声
+            poisson_noise = algo_type.get('poisson_noise', False)
+            if poisson_noise:
+                # 泊松噪声比例[0,1]
+                poisson_percent = poisson_noise.get('poisson_percent', 0)
+                augmenters.append(iaa.AdditivePoissonNoise(poisson_percent))
+            ########### 高级变换############
+            # 18.弹性变换
+            elastic_transform = algo_type.get('elastic_transform', False)
+            if elastic_transform:
+                alpha = elastic_transform.get('elastic_alpha', 50)
+                sigma = elastic_transform.get('elastic_sigma', 5)
+                augmenters.append(iaa.ElasticTransformation(
+                    alpha=alpha, sigma=sigma))
+            # 19.直方图均衡化
+            hist_eq = algo_type.get('hist_eq', False)
+            if hist_eq:
+                augmenters.append(iaa.AllChannelsHistogramEqualization())
+            # 20.通道抖动
+            channel_shuffle = algo_type.get('channel_shuffle', False)
+            if channel_shuffle:
+                augmenters.append(iaa.ChannelShuffle())
+            # 21.遮挡
+            cutout = algo_type.get('cutout', False)
+            if cutout:
+                # 遮挡大小
+                cutout_size = cutout.get('cutout_size', 0)
+                # 遮挡数量
+                cutout_count = cutout.get('cutout_count', 0)
+                augmenters.append(iaa.Cutout(
+                    size=cutout_size,
+                    nb_iterations=cutout_count,
+                    squared=False
+                ))
+        except Exception as ex:
+            self.log.logger.error(f"算法管道创建异常,错误:{ex}")
+            return
+
+        # 如果没有指定任何增强，使用默认增强
+        if not augmenters:
+            augmenters = [
+                iaa.Rotate((-15, 15)),
+                iaa.Fliplr(0.5),
+                iaa.Multiply((0.8, 1.2)),
+                iaa.GaussianBlur(sigma=(0, 1.0))
+            ]
+
+        return iaa.Sequential(augmenters, random_order=True)
+
+    async def _enhance_single_image(self, idx, total_count, image_info, augmentation_pipeline):
+        """增强单张图像"""
+        full_path, rel_path, data_name = image_info
+
+        try:
+            # 读取图像
+            image = cv2.imread(full_path)
+            if image is None:
+                self.log.logger.error(f"无法读取图像:{full_path}")
+                return False
+            # 移动到外面去--不用重复构建判断
+            # 创建输出目录:taskId-data1,data2,...,dataN
+            # output_base_dir = os.path.join(
+            #     enhance_result, self.task_id, data_name)
+            # if not os.path.exists(output_base_dir):
+            #     os.makedirs(output_base_dir, exist_ok=True)
+
+            # 保持原始目录结构
+            # rel_dir = os.path.dirname(rel_path)
+            # if rel_dir:
+            #     output_dir = os.path.join(output_base_dir, rel_dir)
+            #     os.makedirs(output_dir, exist_ok=True)
+            # else:
+            #     output_dir = output_base_dir
+            output_dir = os.path.join(self.enhance_dir, data_name)
+
+            # 获取原始文件名和扩展名
+            filename = os.path.basename(full_path)
+            name, ext = os.path.splitext(filename)
+
+            # # 保存原始图像
+            # original_output_path = os.path.join(output_dir, filename)
+            # cv2.imwrite(original_output_path, image)
+            # self.log.logger.info(f"保存原始图像: {original_output_path}")
+
+            # 生成增强图像
+            try:
+                # 应用增强
+                augmented_image = augmentation_pipeline(image=image)
+
+                # 生成增强图像文件名
+                enhanced_filename = f"{name}{ext}"
+                enhanced_output_path = os.path.join(output_dir,
+                                                    enhanced_filename)
+
+                # 保存增强图像
+                cv2.imwrite(enhanced_output_path, augmented_image)
+                # self.log.logger.info(f"保存增强图像:{enhanced_output_path}")
+                # 发送一条进度消息
+                if hasattr(self, 'rds'):
+                    task_result = {
+                        "taskId": self.task_id,
+                        "status": EnhanceStatusType.RUNNING,
+                        # "message": f"数据增强任务{self.task_id}运行中,当前处理第{idx}张图像!"
+                        "progress": f"{idx+1}/{total_count}"
+                    }
+                    self.rds.xadd(enhance_action_result_topic_name, {
+                        'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+
+            except Exception as e:
+                self.log.logger.error(
+                    f"增强图像{full_path}失败:{str(e)}")
+
+            return True
+
+        except Exception as e:
+            self.log.logger.error(f"处理图像{full_path}失败:{str(e)}")
+            return False
+
+    async def _enhance_all_images(self, image_files: list, augmentation_pipeline: list):
+        """异步增强所有图像"""
+
+        tasks = []
+        total_count = len(image_files)  # 总得图像数
+        for idx, image_info in enumerate(image_files):  # 传个索引进去,方便统计进度
+            task = self._enhance_single_image(
+                idx, total_count, image_info, augmentation_pipeline)
+            tasks.append(task)
+
+        # 并发执行所有增强任务
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        success_count = sum(1 for result in results if result is True)
+        # total_count = len(results)
+
+        self.log.logger.info(
+            f"图像增强任务:{self.task_id}完成,成功{success_count}/{total_count}")
+        return success_count, total_count
+
+    def _delete_local_files(self):
+        """sumary_line
+        清理增强后的图像        
+        """
+        try:
+            if os.path.exists(self.enhance_dir):  # 删除到taskId目录
+                shutil.rmtree(self.enhance_dir)
+                os.makedirs(self.enhance_dir, exist_ok=True)
+                self.log.logger.info(f"已删除任务{self.task_id}生成的增强图像!")
+        except Exception as ex:
+            self.log.logger.error(f"删除任务{self.task_id}生成的图像异常,错误:{ex}")
+
+    def start_enhance_task(self):
+        """_summary_
+        启动增强任务
+        """
+        task_result = {}
+        start_time = time.time()
+        try:
+            # 上传增强开始状态
+            if hasattr(self, 'rds'):
+                task_result = {
+                    "taskId": self.task_id,
+                    "status": EnhanceStatusType.RUNNING,
+                    "message": f"数据增强任务{self.task_id}运行中"
+                }
+                self.rds.xadd(enhance_action_result_topic_name, {
+                    'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+
+            # 1. 获取下载到本地的图像数据信息
+            image_files = self._get_image_files_from_origin()
+            if not image_files:
+                error_msg = f"在{self.local_prefix}目录中未找到图像文件,数据列表:{self.data}"
+                self.log.logger.error(error_msg)
+                if hasattr(self, 'rds'):
+                    task_result = {
+                        "taskId": self.task_id,
+                        "status": EnhanceStatusType.FAILED,
+                        "message": error_msg
+                    }
+                    self.rds.xadd(enhance_action_result_topic_name, {
+                        'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+                return
+
+            # 2. 创建增强算法管道
+            augmentation_pipeline = self._create_augmentation_pipeline(
+                self.algoType)
+
+            # 3. 异步增强处理所有图像
+            for data_path in [os.path.join(self.enhance_dir, item) for item in self.data]:
+                if not os.path.exists(data_path):
+                    os.makedirs(data_path, exist_ok=True)
+
+            success_count, total_count = asyncio.run(
+                self._enhance_all_images(image_files, augmentation_pipeline)
+            )
+
+            if success_count == 0:
+                error_msg = f"所有图像增强失败"
+                self.log.logger.error(error_msg)
+                if hasattr(self, 'rds'):
+                    task_result = {
+                        "taskId": self.task_id,
+                        "status": EnhanceStatusType.FAILED,
+                        "message": error_msg
+                    }
+                    self.rds.xadd(enhance_action_result_topic_name, {
+                        'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+                return
+
+            # 4. 上传增强结果到MinIO
+            asyncio.run(self.upload_all_files())
+
+            # 5. 完成任务
+            duration = time.time() - start_time
+            success_msg = f"增强任务{self.task_id}完成,处理{success_count}/{total_count}张图像,耗时{duration:.2f}秒!"
+            self.log.logger.info(success_msg)
+
+            if hasattr(self, 'rds'):
+                task_result = {
+                    "taskId": self.task_id,
+                    "status": EnhanceStatusType.SUCCESS,
+                    "message": success_msg
+                }
+                self.rds.xadd(enhance_action_result_topic_name, {
+                    'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+            # 6.删除本地增强图像
+            if not save_enhance_result:
+                self._delete_local_files()
+            return
+        except Exception as ex:
+            duration = time.time() - start_time
+            error_msg = f"增强任务{self.task_id}失败:{str(ex)},耗时{duration:.2f}秒!"
+            self.log.logger.error(error_msg)
+
+            if hasattr(self, 'rds'):
+                task_result = {
+                    "taskId": self.task_id,
+                    "status": EnhanceStatusType.FAILED,
+                    "message": error_msg
+                }
+                self.rds.xadd(enhance_action_result_topic_name, {
+                    'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+            return
+
+    def stop_enhance_task(self):
+        """_summary_
+        停止导出任务--单进程且导出时长很短,此功能暂时不添加
+        """
+        pass
+
+    def get_enhance_task_status(self):
+        pass
+
+    def get_enhance_task_result(self):
+        pass
+
+    def get_enhance_task_log(self):
         pass

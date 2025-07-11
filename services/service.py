@@ -10,15 +10,21 @@
 @Email      :2462491568@qq.com
 '''
 
-from string import ascii_uppercase
 import redis
 import minio
 import time
 import datetime
 import json
 import multiprocessing as mp
-from utils import Logger, Dataset, uploadMinio, TrainStatusType
-from services.task import TrainTask, ExportTask
+from string import ascii_uppercase
+from services.task import TrainTask, ExportTask, EnhanceTask
+from utils import (Logger,
+                   Dataset,
+                   DownloadDataset,
+                   uploadMinio,
+                   TrainStatusType,
+                   ExportStatusType,
+                   EnhanceStatusType)
 from config import (IP,
                     minio_endpoint,
                     minio_access_key,
@@ -29,8 +35,10 @@ from config import (IP,
                     minio_data_prefix,
                     minio_train_prefix,
                     minio_export_prefix,
+                    minio_enhance_bucket_prefix,
+                    minio_origin_data_prefix,
+                    minio_enhance_data_prefix,
                     max_workers)
-from utils.status import ExportStatusType
 
 
 class BaseService:
@@ -91,6 +99,177 @@ class BaseService:
             if group['name'].decode('utf-8') == group_name:
                 return True
         return False
+
+
+class EnhanceService(BaseService):
+    def __init__(self,
+                 redis_ip,
+                 redis_port,
+                 redis_pwd,
+                 redis_db,
+                 logs,
+                 enhance_action_opt_topic_name,
+                 enhance_action_result_topic_name):
+        super().__init__(redis_ip,
+                         redis_port,
+                         redis_pwd,
+                         redis_db,
+                         logs)
+        # 子类初始化
+        self.enhance_action_opt_topic_name = enhance_action_opt_topic_name
+        self.enhance_action_result_topic_name = enhance_action_result_topic_name
+        self.enhance_tasks = set()  # 和导出一样,value是增强任务的id,(因为增强处理很快,
+        # 只记录有没有重复启动,不考虑停止)
+
+    def add_task(self, taskId: str, log: Logger):
+        """_summary_
+        添加增强任务
+        """
+        if taskId in self.enhance_tasks:
+            log.logger.info(f"当前任务:{taskId}已经存在,无需重复添加.")
+            return False
+        self.enhance_tasks.add(taskId)
+        log.logger.info(f"当前任务:{taskId}添加成功.")
+        return True
+
+    def remove_task(self, taskId: str, log: Logger):
+        """_summary_
+        移除增强任务
+        """
+        if taskId not in self.enhance_tasks:
+            log.logger.info(f"当前任务:{taskId}不存在,无需移除.")
+            return False
+        self.enhance_tasks.remove(taskId)
+        log.logger.info(f"当前任务:{taskId}移除成功.")
+        return True
+
+    def has_task(self, taskId: str):
+        """_summary_
+        判断任务是否存在
+        """
+        return taskId in self.enhance_tasks
+
+    def get_task_message(self, enhance_task_action_opt_msg: dict):
+        """_summary_
+        解析任务消息
+        """
+        taskId = enhance_task_action_opt_msg.get("taskId", None)
+        data = enhance_task_action_opt_msg.get("data", [])
+        algoType = enhance_task_action_opt_msg.get("algoType", {})
+        return (taskId, data, algoType)
+
+    def upload_enhance_result(self, taskId: str, status: EnhanceStatusType, message: str):
+        """_summary_
+        上传增强结果
+        """
+        task_result = {
+            "taskId": taskId,
+            "status": status.value,
+            "message": message
+        }
+        message_id = self.rds.xadd(self.enhance_action_result_topic_name, {
+            'enhanceResult': json.dumps(task_result).encode()}, maxlen=100)
+
+    def start_enhance_process(self, taskId: str, data: list, algoType: dict):
+        """_summary_
+        启动增强进程
+        """
+        # 每个增强任务的唯一标识
+        if self.has_task(taskId):  # 当前任务还存在
+            repeat_enhance_log = Logger(
+                f'{self.logs}/repeat_enhance_log_{taskId}.txt', level='info')
+            self.upload_enhance_result(taskId, EnhanceStatusType.FAILED,
+                                       f'增强任务:{taskId}已经启动运行中,无需重复启动！')
+            repeat_enhance_log.logger.info(
+                f'增强任务:{taskId}已经启动运行中,无需重复启动！')
+            return
+
+        # 增强任务流程
+        # 1.待增强数据集并发下载
+        enhance_datasets_log = Logger(
+            f"{self.logs}/enhance_datasets_log_{taskId}.txt", level="info")
+        ddt = DownloadDataset(self.minio_client,
+                              minio_origin_data_prefix,  # minio的origin_data
+                              minio_enhance_bucket_prefix,  # minio的桶名enhance
+                              data,  # 选中的数据[sleep-v1,sleep-v2,sleep-v3]
+                              enhance_datasets_log)
+        ddt.start()
+        ddt.join()  # 这里阻塞,等待数据全部下载完成才能增强
+        if not ddt.isFinished:
+            self.upload_enhance_result(
+                taskId, EnhanceStatusType.FAILED, f"数据{data}下载失败,请先上传数据!")
+            return
+        # 正常启动增强--增强+上传(不耗时,同步)
+        start_enhance_log = Logger(
+            f'{self.logs}/start_enhance_log_{taskId}.txt', level='info')
+        curr_task = EnhanceTask(
+            taskId,
+            self.minio_client,
+            minio_enhance_bucket_prefix,  # minio的桶名
+            minio_origin_data_prefix,  # minio的origin_data
+            minio_enhance_data_prefix,  # minio的enhance_data
+            data,  # 选中的数据[data1,data2,...,dataN]
+            algoType,  # 增强算法类型和配置
+            max_workers,
+            start_enhance_log,
+            self.rds)  # 传递Redis客户端，用于状态更新和消息发送
+        # 这里和训练不一样,导出时间较短,直接在一个进程中启动增强、上传
+        pet = mp.Process(target=curr_task.start_enhance_task)
+        pet.start()
+        # 增强时间短，但还是要在进程中启动，因为整体服务需要在独立进程中异步执行
+        # curr_task.start_enhance_task()
+
+    def run(self):
+        enhance_action_opt_log = Logger(
+            f"{self.logs}/enhance_action_opt.txt", level="info")
+        group_name = "".join(["action_", IP])
+        if not self.rds.exists(self.enhance_action_opt_topic_name) or not self.check_consumer_group_exists(self.enhance_action_opt_topic_name, group_name):
+            self.rds.xgroup_create(
+                name=self.enhance_action_opt_topic_name,
+                groupname=group_name,
+                id='$',
+                mkstream=True)
+        while True:
+            try:
+                response = self.rds.xreadgroup(
+                    groupname=group_name,
+                    consumername=group_name,
+                    streams={self.enhance_action_opt_topic_name: '>'},
+                    count=1000, block=0)
+                if not response:
+                    time.sleep(3)
+                    continue
+                enhance_action_opt_log.logger.info(f"增强服务监听到Redis消息!")
+            except Exception as ex:
+                enhance_action_opt_log.logger.error(
+                    f'Redis监听异常,尝试重连Redis!\t异常信息:{ex}')
+                time.sleep(3)
+                continue
+            try:
+                stream_name, message_list = response[0]
+                message_id, message_data = message_list[0]
+                # 完成消费后,标记消息为已处理,并且任务被执行前删除该消息
+                self.rds.execute_command(
+                    'XACK', self.enhance_action_opt_topic_name, group_name, message_id)
+                opt_msg = message_data[b"action"].decode()
+                enhance_action_opt_log.logger.info(f'Redis消息内容:{opt_msg}')
+                enhance_task_action_opt_msg = json.loads(opt_msg)
+                # 解析增强任务消息
+                taskId, data, algoType = self.get_task_message(
+                    enhance_task_action_opt_msg)
+                self.rds.xdel(self.enhance_action_opt_topic_name, message_id)
+                # 兼容分布式增强和单节点
+                if enhance_task_action_opt_msg['ip'] != IP:
+                    # 增强耗时比较短,单个任务的下载,增强,上传同步实现
+                    self.upload_enhance_result(
+                        taskId, EnhanceStatusType.FAILED,
+                        "当前服务器配置IP和选择的服务器IP不匹配,请联系管理员!")
+                    continue
+                self.start_enhance_process(taskId, data, algoType)
+                time.sleep(10)
+            except Exception as ex:
+                enhance_action_opt_log.logger.error(f'增强服务处理异常,异常信息:{ex}')
+                time.sleep(3)
 
 
 class trainService(BaseService):
@@ -394,7 +573,9 @@ class trainService(BaseService):
                 train_task_action_opt_msg = json.loads(opt_msg)
                 if train_task_action_opt_msg['ip'] != IP:
                     self.upload_train_result(
-                        taskId, TrainStatusType.FAILED, "当前服务器配置IP和选择的服务器IP不匹配,请联系管理员!")
+                        train_task_action_opt_msg['taskId'],
+                        TrainStatusType.FAILED,
+                        "当前服务器配置IP和选择的服务器IP不匹配,请联系管理员!")
                     continue
                 self.rds.xdel(self.train_action_opt_topic_name, message_id)
                 # 解析训练任务消息
@@ -562,7 +743,7 @@ class exportService(BaseService):
                     block=1000, count=1)
                 if response:
                     export_action_opt_log.logger.info(
-                        f'导出服务监听到Redis消息...')
+                        f'导出服务监听到Redis消息!')
                 else:
                     # export_action_opt_log.logger.warn('训练服务没监听到Redis消息!')
                     time.sleep(3)
@@ -582,6 +763,10 @@ class exportService(BaseService):
                 export_action_opt_log.logger.info(f'Redis消息内容:{opt_msg}')
                 export_task_action_opt_msg = json.loads(opt_msg)
                 if export_task_action_opt_msg['ip'] != IP:
+                    self.upload_task_result(
+                        export_task_action_opt_msg['taskId'],
+                        ExportStatusType.FAILED,
+                        "当前服务器配置IP和选择的服务器IP不匹配,请联系管理员!")
                     continue
                 self.rds.xdel(self.export_action_opt_topic_name, message_id)
                 # 解析导出任务消息

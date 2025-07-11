@@ -1,9 +1,10 @@
 from .common import *
 from .logModels import Logger
-from .datasets import Dataset
+from .datasets import Dataset, DownloadDataset
 from .uploadMinio import uploadMinio
-from .status import TrainStatusType, ExportStatusType
+from .status import TrainStatusType, ExportStatusType, EnhanceStatusType
 __all__ = ['file_save', 'handle_pipe', 'find_pt',
            'Logger', 'Dataset', 'uploadMinio',
-           'TrainStatusType', 'ExportStatusType'
+           'TrainStatusType', 'ExportStatusType',
+           'EnhanceStatusType', 'DownloadDataset'
            ]
