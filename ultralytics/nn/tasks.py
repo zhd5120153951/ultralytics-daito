@@ -80,6 +80,7 @@ from ultralytics.utils.loss import (
     v8SegmentationLoss,
 )
 from ultralytics.utils.ops import make_divisible
+from ultralytics.utils.patches import torch_load
 from ultralytics.utils.plotting import feature_visualization
 from ultralytics.utils.torch_utils import (
     fuse_conv_and_bn,
@@ -248,6 +249,8 @@ class BaseModel(torch.nn.Module):
                     m.forward = m.forward_fuse
                 if isinstance(m, v10Detect):
                     m.fuse()  # remove one2many head
+                if isinstance(m, YOLOEDetect) and hasattr(self, "pe"):
+                    m.fuse(self.pe.to(next(self.model.parameters()).device))
             self.info(verbose=verbose)
 
         return self
@@ -880,7 +883,6 @@ class WorldModel(DetectionModel):
         self.txt_feats = self.get_text_pe(text, batch=batch, cache_clip_model=cache_clip_model)
         self.model[-1].nc = len(text)
 
-    @smart_inference_mode()
     def get_text_pe(self, text, batch=80, cache_clip_model=True):
         """
         Set classes in advance so that model could do offline-inference without clip model.
@@ -1442,9 +1444,9 @@ def torch_safe_load(weight, safe_only=False):
                 safe_pickle.Unpickler = SafeUnpickler
                 safe_pickle.load = lambda file_obj: SafeUnpickler(file_obj).load()
                 with open(file, "rb") as f:
-                    ckpt = torch.load(f, pickle_module=safe_pickle)
+                    ckpt = torch_load(f, pickle_module=safe_pickle)
             else:
-                ckpt = torch.load(file, map_location="cpu")
+                ckpt = torch_load(file, map_location="cpu")
 
     except ModuleNotFoundError as e:  # e.name is missing module name
         if e.name == "models":
@@ -1470,7 +1472,7 @@ def torch_safe_load(weight, safe_only=False):
             f"run a command with an official Ultralytics model, i.e. 'yolo predict model=yolo11n.pt'"
         )
         check_requirements(e.name)  # install missing module
-        ckpt = torch.load(file, map_location="cpu")
+        ckpt = torch_load(file, map_location="cpu")
 
     if not isinstance(ckpt, dict):
         # File is likely a YOLO instance saved with i.e. torch.save(model, "saved_model.pt")
@@ -1505,7 +1507,7 @@ def attempt_load_weights(weights, device=None, inplace=True, fuse=False):
         # Model compatibility updates
         model.args = args  # attach args to model
         model.pt_path = w  # attach *.pt file path to model
-        model.task = guess_model_task(model)
+        model.task = getattr(model, "task", guess_model_task(model))
         if not hasattr(model, "stride"):
             model.stride = torch.tensor([32.0])
 
@@ -1553,7 +1555,7 @@ def attempt_load_one_weight(weight, device=None, inplace=True, fuse=False):
     # Model compatibility updates
     model.args = {k: v for k, v in args.items() if k in DEFAULT_CFG_KEYS}  # attach args to model
     model.pt_path = weight  # attach *.pt file path to model
-    model.task = guess_model_task(model)
+    model.task = getattr(model, "task", guess_model_task(model))
     if not hasattr(model, "stride"):
         model.stride = torch.tensor([32.0])
 
