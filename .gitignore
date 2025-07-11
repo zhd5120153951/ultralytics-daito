@@ -181,3 +181,6 @@ train_results/
 export_results/
 log/
 logs/
+jupyter/
+enhance_results/
+origin_data/
