@@ -21,7 +21,6 @@ from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
 from .logModels import Logger
-from ..config import max_workers
 
 
 class Dataset(Thread):
@@ -33,7 +32,7 @@ class Dataset(Thread):
     # python类没有真正的私有属性,__Dataset.__ext_name访问
     __ext_name = ('.jpg', '.jpeg', '.png', '.xml')
 
-    def __init__(self, minio: Minio, datasets_dir: str,  bucket: str, datasets: list, labels: list, ratio: float, data_yaml_path: str, log: Logger):
+    def __init__(self, minio: Minio, datasets_dir: str,  bucket: str, datasets: list, labels: list, ratio: float, data_yaml_path: str, max_workers: int, log: Logger):
         '''
         初始化线程对象
         params:
@@ -328,7 +327,7 @@ class DownloadDataset(Thread):
     # python类没有真正的私有属性,__Dataset.__ext_name访问
     __ext_name = ('.jpg', '.jpeg', '.png')
 
-    def __init__(self, minio: Minio, data_dir: str,  bucket: str, data: list, log: Logger):
+    def __init__(self, minio: Minio, data_dir: str,  bucket: str, data: list, max_workers: int, log: Logger):
         '''
         初始化线程对象
         params:

@@ -192,6 +192,7 @@ class EnhanceService(BaseService):
                               minio_origin_data_prefix,  # minio的origin_data
                               minio_enhance_bucket_prefix,  # minio的桶名enhance
                               data,  # 选中的数据[sleep-v1,sleep-v2,sleep-v3]
+                              max_workers,
                               enhance_datasets_log)
         ddt.start()
         ddt.join()  # 这里阻塞,等待数据全部下载完成才能增强
@@ -430,6 +431,7 @@ class trainService(BaseService):
                           labels,
                           ratio,
                           data_yaml_path,
+                          max_workers,
                           downlaod_datasets_log)
         dataset.start()
 
