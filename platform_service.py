@@ -21,6 +21,7 @@ from config import (redis_ip,
                     train_result,
                     export_result,
                     enhance_result,
+                    local_data_dir,
                     train_action_opt_topic_name,
                     train_action_result_topic_name,
                     export_action_opt_topic_name,
@@ -42,7 +43,7 @@ def main():
     '''
     try:
         # 创建必要的目录
-        for dir in [data_cfg, logs, pretrained_models, train_result, export_result, enhance_result]:
+        for dir in [data_cfg, logs, pretrained_models, train_result, export_result, enhance_result, local_data_dir]:
             if not os.path.exists(dir):
                 os.makedirs(dir, exist_ok=True)
         if enhance_service_enable:  # 启用数据增强服务
@@ -68,7 +69,7 @@ def main():
         export_proc = multiprocessing.Process(target=export_service.run)
         export_proc.start()
 
-        # 启动训练任务主进程中(改为独立进程而不是在主进程中运行?)
+        # 启动训练任务主进程
         train_service = trainService(redis_ip,
                                      redis_port,
                                      redis_pwd,

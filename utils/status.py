@@ -31,3 +31,4 @@ class EnhanceStatusType(str, Enum):
     SUCCESS = "SUCCESS"
     RUNNING = "RUNNING"
     FAILED = "FAILED"
+    READYFORRUN = "READYFORRUN"

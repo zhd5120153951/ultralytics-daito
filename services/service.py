@@ -20,7 +20,7 @@ from string import ascii_uppercase
 from services.task import TrainTask, ExportTask, EnhanceTask
 from utils import (Logger,
                    Dataset,
-                   DownloadDataset,
+                   DownloadData,
                    uploadMinio,
                    TrainStatusType,
                    ExportStatusType,
@@ -35,8 +35,8 @@ from config import (IP,
                     minio_data_prefix,
                     minio_train_prefix,
                     minio_export_prefix,
+                    local_data_dir,
                     minio_enhance_bucket_prefix,
-                    minio_origin_data_prefix,
                     minio_enhance_data_prefix,
                     max_workers)
 
@@ -153,7 +153,7 @@ class EnhanceService(BaseService):
         """_summary_
         解析任务消息
         """
-        taskId = enhance_task_action_opt_msg.get("taskId", None)
+        taskId = enhance_task_action_opt_msg.get("taskId", "")
         data = enhance_task_action_opt_msg.get("data", [])
         algoType = enhance_task_action_opt_msg.get("algoType", {})
         return (taskId, data, algoType)
@@ -188,12 +188,14 @@ class EnhanceService(BaseService):
         # 1.待增强数据集并发下载
         enhance_datasets_log = Logger(
             f"{self.logs}/enhance_datasets_log_{taskId}.txt", level="info")
-        ddt = DownloadDataset(self.minio_client,
-                              minio_origin_data_prefix,  # minio的origin_data
-                              minio_enhance_bucket_prefix,  # minio的桶名enhance
-                              data,  # 选中的数据[sleep-v1,sleep-v2,sleep-v3]
-                              max_workers,
-                              enhance_datasets_log)
+        ddt = DownloadData(self.minio_client,
+                           local_data_dir,  # 本地保存目录origin_data
+                           minio_enhance_bucket_prefix,  # minio的桶名train
+                           taskId,
+                           # 选中的数据[sleep-v1/x1.jpg,sleep-v2/x2.jpg,sleep-v3/x3.jpg]
+                           data,
+                           max_workers,
+                           enhance_datasets_log)
         ddt.start()
         ddt.join()  # 这里阻塞,等待数据全部下载完成才能增强
         if not ddt.isFinished:
@@ -207,9 +209,9 @@ class EnhanceService(BaseService):
             taskId,
             self.minio_client,
             minio_enhance_bucket_prefix,  # minio的桶名
-            minio_origin_data_prefix,  # minio的origin_data
+            local_data_dir,  # minio的origin_data
             minio_enhance_data_prefix,  # minio的enhance_data
-            data,  # 选中的数据[data1,data2,...,dataN]
+            data,  # 选中的数据[data1/1.jpg,data2/2.jpg,...,dataN/N.jpg]
             algoType,  # 增强算法类型和配置
             max_workers,
             start_enhance_log,

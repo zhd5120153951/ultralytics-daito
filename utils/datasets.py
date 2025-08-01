@@ -319,7 +319,7 @@ class Dataset(Thread):
         self.isFinished = True
 
 
-class DownloadDataset(Thread):
+class DownloadData(Thread):
     '''
     数据集类--继承Thraed,下载待增强的数据到本地
     '''
@@ -327,7 +327,7 @@ class DownloadDataset(Thread):
     # python类没有真正的私有属性,__Dataset.__ext_name访问
     __ext_name = ('.jpg', '.jpeg', '.png')
 
-    def __init__(self, minio: Minio, data_dir: str,  bucket: str, data: list, max_workers: int, log: Logger):
+    def __init__(self, minio: Minio, data_dir: str,  bucket: str, taskId: str, data: list, max_workers: int, log: Logger):
         '''
         初始化线程对象
         params:
@@ -340,10 +340,9 @@ class DownloadDataset(Thread):
         self.isFinished = False  # 数据集是否正常下载完成
         self.minio_client = minio
         self.data_dir = data_dir  # origin_data
-        self.bucket = bucket  # enhance
-        self.data_list = data  # minio选中的数据集列表
-        self.data_src = [os.path.join(self.data_dir, item)
-                         for item in data]  # minio目录和本地目录结构相同
+        self.bucket = bucket  # 统一使用train桶
+        self.taskId = taskId
+        self.data_list = data  # 选中的数据图像路径列表
         self.log = log
         # 创建线程池--异步执行各种任务
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -356,7 +355,7 @@ class DownloadDataset(Thread):
         只读属性,通过@property装饰器实现
         外部只能通过DownloadDataset.get_ext_name获取值,而不能直接修改它
         '''
-        return DownloadDataset.__ext_name
+        return DownloadData.__ext_name
 
     @classmethod  # 静态方法
     def _set_ext_name(cls, new_ext_name):
@@ -366,19 +365,6 @@ class DownloadDataset(Thread):
         正确做法:设置setattr、getattr
         '''
         cls.__ext_name = new_ext_name
-
-    def make_local_dir(self):
-        ret = []
-        try:
-            # 遍历本地目录,如果存在,则返回True,否则返回False
-            for idx, value in enumerate(self.data_src):
-                if os.path.exists(value):
-                    ret.append(True)
-                else:
-                    ret.append(False)
-        except Exception as ex:
-            self.log.logger.error(f'创建第{idx}本地目录时出错:{ex}')
-        return ret
 
     def run(self):
         '''
@@ -390,17 +376,16 @@ class DownloadDataset(Thread):
         except Exception as ex:
             self.log.logger.error(f'DownloadDataset对象线程运行中出错！错误内容:{ex}')
 
-    async def download_files(self, obj, idx):
+    async def download_files(self, obj):
         '''
         异步下载单个文件,利用run_in_executor()把同步下载任务放入线程池中执行
         param: 
             obj:Minio对象
-            idx:prefix索引
         return:
             下载后的本地文件路径
         '''
         local_file_path = os.path.join(
-            self.data_dir, self.data_list[idx], os.path.basename(obj.object_name))
+            self.data_dir, self.taskId, os.path.basename(obj.object_name))  # origin_data/task_id/xxx.jpg
         loop = asyncio.get_event_loop()
         self.log.logger.info(
             f'开始下载{obj.object_name}到{local_file_path}')
@@ -412,30 +397,21 @@ class DownloadDataset(Thread):
         return local_file_path
 
     async def download_data(self):
-        repeat_download = self.make_local_dir()  # True:重复下载 False:首次下载--返回[]
-        # 重复下载时--不下载数据
         try:
-            for idx, value in enumerate(repeat_download):
-                if value:
-                    self.log.logger.info(
-                        f'数据集{self.data_list[idx]}已存在,请勿重复选择.')
-                else:
-                    minio_obj = self.minio_client.list_objects(
-                        bucket_name=self.bucket, prefix=os.path.join(self.data_dir, self.data_list[idx]), recursive=True)
-                    task = []
-                    # 筛选图片
-                    for obj in minio_obj:
-                        if obj.object_name.lower().endswith(DownloadDataset.__ext_name):
-                            task.append(self.download_files(obj, idx))
-                    if task:
-                        # 并发执行所有下载任务
-                        await asyncio.gather(*task)
-                    else:
-                        self.log.logger.info(
-                            f'数据集{self.data_list[idx]}没有找到符合条件的图片.')
-                    task.clear()
+            for pp in self.data_list:
+                minio_obj = self.minio_client.list_objects(
+                    bucket_name=self.bucket, prefix=pp, recursive=False)  # 非递归,只返回当前目录下的文件
+                task = []
+                # 筛选图片
+                for obj in minio_obj:
+                    if obj.object_name.lower().endswith(DownloadData.__ext_name):
+                        task.append(self.download_files(obj))
+                if task:
+                    # 并发执行所有下载任务
+                    await asyncio.gather(*task)
+                task.clear()
         except Exception as ex:
-            self.log.logger.error(f'数据集{self.data_list[idx]}下载出错,错误内容:{ex}')
+            self.log.logger.error(f'{pp}下载出错,错误内容:{ex}')
             self.isFinished = False
 
     async def download_datasets(self):
