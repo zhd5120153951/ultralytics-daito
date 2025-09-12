@@ -71,7 +71,7 @@ def test_export_openvino_matrix(task, dynamic, int8, half, batch, nms):
         # See https://github.com/ultralytics/ultralytics/actions/runs/8957949304/job/24601616830?pr=10423
         file = Path(file)
         file = file.rename(file.with_stem(f"{file.stem}-{uuid.uuid4()}"))
-    YOLO(file)([SOURCE] * batch, imgsz=64 if dynamic else 32)  # exported model inference
+    YOLO(file)([SOURCE] * batch, imgsz=64 if dynamic else 32, batch=batch)  # exported model inference
     shutil.rmtree(file, ignore_errors=True)  # retry in case of potential lingering multi-threaded file usage errors
 
 
@@ -100,7 +100,9 @@ def test_export_onnx_matrix(task, dynamic, int8, half, batch, simplify, nms):
     "task, dynamic, int8, half, batch, nms",
     [  # generate all combinations except for exclusion cases
         (task, dynamic, int8, half, batch, nms)
-        for task, dynamic, int8, half, batch, nms in product(TASKS, [False], [False], [False], [1, 2], [True, False])
+        for task, dynamic, int8, half, batch, nms in product(
+            TASKS, [False, True], [False], [False], [1, 2], [True, False]
+        )
         if not (task == "classify" and nms)
     ],
 )
@@ -118,14 +120,16 @@ def test_export_torchscript_matrix(task, dynamic, int8, half, batch, nms):
 @pytest.mark.skipif(not TORCH_1_9, reason="CoreML>=7.2 not supported with PyTorch<=1.8")
 @pytest.mark.skipif(checks.IS_PYTHON_3_13, reason="CoreML not supported in Python 3.13")
 @pytest.mark.parametrize(
-    "task, dynamic, int8, half, batch",
+    "task, dynamic, int8, half, nms, batch",
     [  # generate all combinations except for exclusion cases
-        (task, dynamic, int8, half, batch)
-        for task, dynamic, int8, half, batch in product(TASKS, [False], [True, False], [True, False], [1])
-        if not (int8 and half)
+        (task, dynamic, int8, half, nms, batch)
+        for task, dynamic, int8, half, nms, batch in product(
+            TASKS, [False], [True, False], [True, False], [True, False], [1]
+        )
+        if not (int8 and half) and not (task != "detect" and nms)
     ],
 )
-def test_export_coreml_matrix(task, dynamic, int8, half, batch):
+def test_export_coreml_matrix(task, dynamic, int8, half, nms, batch):
     """Test YOLO export to CoreML format with various parameter configurations."""
     file = YOLO(TASK2MODEL[task]).export(
         format="coreml",
@@ -134,6 +138,7 @@ def test_export_coreml_matrix(task, dynamic, int8, half, batch):
         int8=int8,
         half=half,
         batch=batch,
+        nms=nms,
     )
     YOLO(file)([SOURCE] * batch, imgsz=32)  # exported model inference
     shutil.rmtree(file)  # cleanup
@@ -216,10 +221,35 @@ def test_export_mnn():
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    "task, int8, half, batch",
+    [  # generate all combinations except for exclusion cases
+        (task, int8, half, batch)
+        for task, int8, half, batch in product(TASKS, [True, False], [True, False], [1, 2])
+        if not (int8 and half)
+    ],
+)
+def test_export_mnn_matrix(task, int8, half, batch):
+    """Test YOLO export to MNN format considering various export configurations."""
+    file = YOLO(TASK2MODEL[task]).export(format="mnn", imgsz=32, int8=int8, half=half, batch=batch)
+    YOLO(file)([SOURCE] * batch, imgsz=32)  # exported model inference
+    Path(file).unlink()  # cleanup
+
+
+@pytest.mark.slow
 def test_export_ncnn():
     """Test YOLO export to NCNN format."""
     file = YOLO(MODEL).export(format="ncnn", imgsz=32)
     YOLO(file)(SOURCE, imgsz=32)  # exported model inference
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("task, half, batch", list(product(TASKS, [True, False], [1])))
+def test_export_ncnn_matrix(task, half, batch):
+    """Test YOLO export to NCNN format considering various export configurations."""
+    file = YOLO(TASK2MODEL[task]).export(format="ncnn", imgsz=32, half=half, batch=batch)
+    YOLO(file)([SOURCE] * batch, imgsz=32)  # exported model inference
+    shutil.rmtree(file, ignore_errors=True)  # retry in case of potential lingering multi-threaded file usage errors
 
 
 @pytest.mark.skipif(True, reason="Test disabled as keras and tensorflow version conflicts with TFlite export.")
